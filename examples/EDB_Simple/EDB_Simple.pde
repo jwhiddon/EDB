@@ -42,106 +42,35 @@ byte reader(unsigned long address)
 // Create an EDB object with the appropriate write and read handlers
 EDB db(&writer, &reader);
 
-// Run the demo
 void setup()
 {
   Serial.begin(9600);
   Serial.println("Extended Database Library + Arduino Internal EEPROM Demo");
   Serial.println();
 
-  randomSeed(analogRead(0));
-  
-  Serial.print("Creating table...");
-  // create table at with starting address 0
-  db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
-  Serial.println("DONE");
+  db.create(0, TABLE_SIZE, sizeof(logEvent));
 
-  recordLimit();
-  countRecords();
-  createRecords(RECORDS_TO_CREATE);
-  countRecords();
-  selectAll();
-  deleteAll();
-  countRecords();
+  Serial.print("Record Count: "); Serial.println(db.count());
+
+  Serial.println("Creating Records...");
+  int recno;
+  for (recno = 1; recno <= RECORDS_TO_CREATE; recno++)
+  {
+    logEvent.id = recno; 
+    logEvent.temperature = recno * 2;
+    db.appendRec(EDB_REC logEvent);
+  }
+
+  Serial.print("Record Count: "); Serial.println(db.count());
+  for (recno = 1; recno < RECORDS_TO_CREATE; recno++)
+  {
+    db.readRec(recno, EDB_REC logEvent);
+    Serial.print("ID: "); Serial.println(logEvent.id);
+    Serial.print("Temp: "); Serial.println(logEvent.temperature);   
+  }
 }
 
 void loop()
 {
 }
 
-// utility functions
-
-void recordLimit()
-{
-  Serial.print("Record Limit: ");
-  Serial.println(db.limit());
-}
-
-void deleteOneRecord(int recno)
-{
-  Serial.print("Deleting recno: ");
-  Serial.println(recno);
-  db.deleteRec(recno);
-}
-
-void deleteAll()
-{
-  Serial.print("Truncating table...");
-  db.clear();
-  Serial.println("DONE");
-}
-
-void countRecords()
-{
-  Serial.print("Record Count: "); 
-  Serial.println(db.count());
-}
-
-void createRecords(int num_recs)
-{
-  Serial.print("Creating Records...");
-  for (int recno = 1; recno <= num_recs; recno++)
-  {
-    logEvent.id = recno; 
-    logEvent.temperature = random(1, 125);
-    EDB_Status result = db.appendRec(EDB_REC logEvent);
-    if (result != EDB_OK) printError(result);
-  }
-  Serial.println("DONE");
-}
-
-void selectAll()
-{  
-  for (int recno = 1; recno <= db.count(); recno++)
-  {
-    EDB_Status result = db.readRec(recno, EDB_REC logEvent);
-    if (result == EDB_OK)
-    {
-      Serial.print("Recno: "); 
-      Serial.print(recno);
-      Serial.print(" ID: "); 
-      Serial.print(logEvent.id);
-      Serial.print(" Temp: "); 
-      Serial.println(logEvent.temperature);   
-    }
-    else printError(result);
-  }
-}
-
-void printError(EDB_Status err)
-{
-  Serial.print("ERROR: ");
-  switch (err)
-  {
-    case EDB_OUT_OF_RANGE:
-      Serial.println("Recno out of range");
-      break;
-    case EDB_TABLE_FULL:
-      Serial.println("Table full");
-      break;
-    case EDB_OK:
-    default:
-      Serial.println("OK");
-      break;
-  }
-}
