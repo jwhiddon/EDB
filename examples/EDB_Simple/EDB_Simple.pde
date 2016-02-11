@@ -62,6 +62,7 @@ void setup()
   }
 
   Serial.print("Record Count: "); Serial.println(db.count());
+  // Thanks to katts0...@gmail.com for the next line
   for (recno = 1; recno <= RECORDS_TO_CREATE; recno++)
   {
     db.readRec(recno, EDB_REC logEvent);
