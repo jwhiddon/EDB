@@ -175,7 +175,8 @@ unsigned long EDB::count()
 // returns the maximum number of items that will fit into the queue
 unsigned long EDB::limit()
 {
-   return (EDB_head.table_size - EDB_table_ptr) / EDB_head.rec_size;
+   // Thanks to oleh.sok...@gmail.com for the next line
+   return (EDB_head.table_size - sizeof(EDB_Header)) / EDB_head.rec_size;
 }
 
 // truncates the queue by resetting the internal pointers
