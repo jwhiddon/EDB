@@ -24,7 +24,12 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-#include "WProgram.h"
+// Thanks to robtillaar (http://forum.arduino.cc/index.php/topic,130228.0.html) for the next 4 lines...
+#if defined(ARDUINO) && ARDUINO >= 100
+  #include "Arduino.h"
+#else
+  #include "WProgram.h"
+  
 #include "EDB.h"
 
 /**************************************************/
@@ -81,6 +86,8 @@ EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned
 EDB_Status EDB::open(unsigned long head_ptr)
 {
   EDB_head_ptr = head_ptr;
+  // Thanks to Steve Kelly for the next line... 
+  EDB_table_ptr = sizeof(EDB_Header) + EDB_head_ptr; // this line was originally missing in the downloaded library
   readHead();
   return EDB_OK;
 }
