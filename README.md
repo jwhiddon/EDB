@@ -11,7 +11,7 @@ With these changes, it is now possible to use this library in conjunction with t
 ## Install
 
 * Unzip the download into your Arduino libraries directory
-* If the Arduino IDE is already running then exit and restart the Arduino IDE.
+* If the Arduino IDE is already running then exit and restart the Arduino IDE
 
 ## Getting Started
 
@@ -23,9 +23,10 @@ With these changes, it is now possible to use this library in conjunction with t
 
 ## Examples
 
-* Arduino EEPROM providing 4096 - 32768 bits of address space
-* AT24C1024 I2C EEPROM providing 1,048,576 bits of address space
-* 24XX512 EEPROM providing up to up to 4 Mbit of address space 
+* [Simple Example using internal Arduino EEPROM](https://github.com/jwhiddon/arduino-edb/tree/master/examples/EDB_Simple)
+* [Arduino EEPROM providing 4096 - 32768 bits of address space](https://github.com/jwhiddon/arduino-edb/tree/master/examples/EDB_Internal_EEPROM)
+* [AT24C1024 I2C EEPROM providing 1,048,576 bits of address space](https://github.com/jwhiddon/arduino-edb/tree/master/examples/EDB_AT24C1024)
+* [24XX512 EEPROM providing up to up to 4 Mbit of address space](https://github.com/jwhiddon/arduino-edb/tree/master/examples/EDB_24XX512)
 
 ## Releases
 
