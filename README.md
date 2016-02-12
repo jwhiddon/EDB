@@ -6,7 +6,9 @@ This version increases the maximum number of records allowed in a database from 
 
 With these changes, it is now possible to use this library in conjunction with the standard Arduino EEPROM library, an external EEPROM such as the AT24C1024, providing 128 - 512 kilobytes of non-volatile storage, or any other platform that supports byte level reading and writing such as an SD card.
 
-Extended Database Library Project Home at the Arduino Playground
+Extended Database Library Project Home at the Arduino Playground can be found here:
+
+http://playground.arduino.cc/Code/ExtendedDatabaseLibrary
 
 Examples included:
 
