@@ -24,12 +24,8 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-// Thanks to robtillaar (http://forum.arduino.cc/index.php/topic,130228.0.html) for the next 4 lines...
-#if defined(ARDUINO) && ARDUINO >= 100
-  #include "Arduino.h"
-#else
-  #include "WProgram.h"
-  
+// Thanks to robtillaar (http://forum.arduino.cc/index.php/topic,130228.0.html) for the next line...
+#include "Arduino.h"
 #include "EDB.h"
 
 /**************************************************/
