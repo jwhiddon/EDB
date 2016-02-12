@@ -27,6 +27,9 @@ This is a re-implementation of the [Arduino Database Library](http://playground.
 
 ## Releases
 
+### 1.0.1 - Feb 12, 2016
+* Update filename extensions in example sketches
+
 ### 1.0.0 - Feb 12, 2016
 * Updated to support Arduino 1.0.0+
 * Bug fix in EDB::open
