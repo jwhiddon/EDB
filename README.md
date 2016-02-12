@@ -30,10 +30,10 @@ With these changes, it is now possible to use this library in conjunction with t
 
 ## Releases
 
-### 1.0.1 - Pending
+### 1.0.0 - Feb 29, 2016
 * Updated to support Arduino 1.0.0+
 * Bug fix in EDB::open
 * Moved project to github
 
-### 1.0.0 - Dec 8, 2009
+### 0.7.0 - Dec 8, 2009
 * Initial release
