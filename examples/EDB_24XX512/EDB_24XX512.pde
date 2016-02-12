@@ -9,7 +9,7 @@
  http://www.arduino.cc/playground/Code/I2CEEPROM24C1024
  
  */
-#include "WProgram.h"
+#include "Arduino.h"
 #include <EDB.h>
 
 // Use the 24XX512 EEPROM as storage
