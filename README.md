@@ -1,6 +1,6 @@
 This is a re-implementation of the database library originally written by Madhusudana das found here:
 
-http://www.arduino.cc/playground/Code/DatabaseLibrary
+http://playground.arduino.cc/Code/DatabaseLibrary
 
 This version increases the maximum number of records allowed in a database from 256 records (byte) to a theoretical maximum of 4,294,967,295 records (unsigned long). The maximum record size was also increased from 256 bytes (byte) to 65,534 bytes (unsigned int).
 
