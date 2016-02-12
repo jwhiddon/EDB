@@ -6,7 +6,7 @@
  http://www.arduino.cc/playground/Code/ExtendedDatabaseLibrary
  
  */
-#include "WProgram.h"
+#include "Arduino.h"
 #include <EDB.h>
 
 // Use the Internal Arduino EEPROM as storage
@@ -74,4 +74,3 @@ void setup()
 void loop()
 {
 }
-
