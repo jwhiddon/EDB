@@ -26,9 +26,11 @@ This is a re-implementation of the [Arduino Database Library](http://playground.
 * [24XX512 EEPROM providing up to up to 4 Mbit of address space](https://github.com/jwhiddon/arduino-edb/tree/master/examples/EDB_24XX512)
 
 ## Releases
+
 ### 1.0.0 - Feb 29, 2016
 * Updated to support Arduino 1.0.0+
 * Bug fix in EDB::open
 * Moved project to github
+
 ### 0.7.0 - Dec 8, 2009
 * Initial release
