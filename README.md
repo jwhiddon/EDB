@@ -1,29 +1,38 @@
-This is a re-implementation of the database library originally written by Madhusudana das found here:
+# Arduino Extended Database Library
 
-http://playground.arduino.cc/Code/DatabaseLibrary
+This is a re-implementation of the [Arduino Database Library](http://playground.arduino.cc/Code/DatabaseLibrary) originally written by Madhusudana das.
 
 This version increases the maximum number of records allowed in a database from 256 records (byte) to a theoretical maximum of 4,294,967,295 records (unsigned long). The maximum record size was also increased from 256 bytes (byte) to 65,534 bytes (unsigned int).
 
-With these changes, it is now possible to use this library in conjunction with the standard Arduino EEPROM library, an external EEPROM such as the AT24C1024, providing 128 - 512 kilobytes of non-volatile storage, or any other platform that supports byte level reading and writing such as an SD card.
+With these changes, it is now possible to use this library in conjunction with the standard Arduino EEPROM library, an external EEPROM such as the AT24C1024 providing 128 - 512 kilobytes of non-volatile storage, or any other platform that supports byte level reading and writing such as an SD card.
 
-Extended Database Library Project Home at the Arduino Playground can be found here:
+[Extended Database Library project's home at the Arduino Playground](http://playground.arduino.cc/Code/ExtendedDatabaseLibrary)
 
-http://playground.arduino.cc/Code/ExtendedDatabaseLibrary
+## Install
 
-Examples included:
+* Unzip the download into your Arduino libraries directory
+* If the Arduino IDE is already running then exit and restart the Arduino IDE.
 
-Arduino EEPROM Library providing 512-4096 bytes of storage
-AT24C1024 I2C EEPROM Library providing 128-512 kilobytes of storage
-Installing
+## Getting Started
 
-Unzip the download into your Arduino-00xx/hardware/libraries directory. If the Arduino IDE is already running then exit and restart the Arduino IDE.
+* Include EDB.h in your Arduino sketch
+* Define the data structure for your records
+* Include an I/O interface such as EEPROM.h
+* Declare an instance of EDB in your Arduino sketch
+* Pick an EEPROM address at which the table should start
 
-Quickstart
+## Examples
 
-How to use in a nutshell:
+* Arduino EEPROM providing 4096 - 32768 bits of address space
+* AT24C1024 I2C EEPROM providing 1,048,576 bits of address space
+* 24XX512 EEPROM providing up to up to 4 Mbit of address space 
 
-include EDB.h
-define a structure for your records
-include an I/O interface such as EEPROM.h
-declare an instance of EDB
-pick an address in EEPROM for the table to start
+## Releases
+
+### 1.0.1 - Pending
+* Updated to support Arduino 1.0.0+
+* Bug fix in EDB::open
+* Moved project to github
+
+### 1.0.0 - Dec 8, 2009
+* Initial release
