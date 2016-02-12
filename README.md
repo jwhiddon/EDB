@@ -27,8 +27,9 @@ This is a re-implementation of the [Arduino Database Library](http://playground.
 
 ## Releases
 
-### 1.0.1 - Feb 12, 2016
+### 1.0.2 - Feb 12, 2016
 * Update filename extensions in example sketches
+* More Arduino IDE related files
 
 ### 1.0.0 - Feb 12, 2016
 * Updated to support Arduino 1.0.0+
