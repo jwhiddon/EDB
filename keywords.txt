@@ -1,0 +1,16 @@
+# Extended Database Library syntax highlighting
+
+EDB	KEYWORD1
+
+appendRec	KEYWORD2
+updateRec	KEYWORD2
+insertRec	KEYWORD2
+deleteRec	KEYWORD2
+readRec	KEYWORD2
+writeRec	KEYWORD2
+open	KEYWORD2
+create	KEYWORD2
+limit	KEYWORD2
+count	KEYWORD2
+clear	KEYWORD2
+
