@@ -51,11 +51,16 @@ EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned
 {
   EDB_head_ptr = head_ptr;
   EDB_table_ptr = sizeof(EDB_Header) + EDB_head_ptr;
+  EDB_head.flag = EDB_FLAG;
   EDB_head.n_recs = 0;
   EDB_head.rec_size = recsize;
   EDB_head.table_size = tablesize;
   writeHead();
-  return EDB_OK;
+  if (EDB_head.flag == EDB_FLAG){
+    return EDB_OK;
+  } else {
+    return EDB_ERROR;
+  }
 }
 
 // reads an existing edb header at a given recno and sets header values
