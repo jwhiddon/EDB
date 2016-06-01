@@ -6,9 +6,11 @@
 
 #ifndef EDB_PROM
 #define EDB_PROM
+#define EDB_FLAG B11011011
 
 struct EDB_Header
 {
+  byte flag;
   unsigned long n_recs;
   unsigned int rec_size;
   unsigned long table_size;
@@ -16,6 +18,7 @@ struct EDB_Header
 
 typedef enum EDB_Status { 
                           EDB_OK,
+                          EDB_ERROR,
                           EDB_OUT_OF_RANGE,
                           EDB_TABLE_FULL
                         };
@@ -37,7 +40,7 @@ class EDB {
     EDB_Status updateRec(unsigned long, const EDB_Rec);
     EDB_Status appendRec(EDB_Rec rec);
     unsigned long limit();
-	  unsigned long count();
+    unsigned long count();
     void clear();
   private:
     unsigned long EDB_head_ptr;
