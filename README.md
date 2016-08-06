@@ -24,8 +24,15 @@ This is a re-implementation of the [Arduino Database Library](http://playground.
 * [Arduino EEPROM providing 4096 - 32768 bits of address space](https://github.com/jwhiddon/arduino-edb/tree/master/examples/EDB_Internal_EEPROM)
 * [AT24C1024 I2C EEPROM providing 1,048,576 bits of address space](https://github.com/jwhiddon/arduino-edb/tree/master/examples/EDB_AT24C1024)
 * [24XX512 EEPROM providing up to up to 4 Mbit of address space](https://github.com/jwhiddon/arduino-edb/tree/master/examples/EDB_24XX512)
+* [SD Card example](https://github.com/jwhiddon/EDB/tree/master/examples/EDB_SDCARD)
+* [SPIFFS example](https://github.com/jwhiddon/EDB/tree/master/examples/EDB_SPIFFS)
 
 ## Releases
+
+### 1.0.3 - Aug 6, 2016
+* Added EDB_SPIFFS example
+* Added EDB_SDCARD example
+* Added EDB_ERROR to EDB_Status and a byte flag at the beginning of database header to allow the user to check if the database has been successfully created and is readable
 
 ### 1.0.2 - Feb 12, 2016
 * Update filename extensions in example sketches
