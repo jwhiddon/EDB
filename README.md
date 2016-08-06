@@ -29,6 +29,9 @@ This is a re-implementation of the [Arduino Database Library](http://playground.
 
 ## Releases
 
+### 1.0.4 - Aug 6, 2016
+* Updated library.properties to support all architectures
+
 ### 1.0.3 - Aug 6, 2016
 * Added EDB_SPIFFS example
 * Added EDB_SDCARD example
