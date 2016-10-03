@@ -29,6 +29,9 @@ This is a re-implementation of the [Arduino Database Library](http://playground.
 
 ## Releases
 
+### 1.0.5 - Oct 4, 2016
+* Updated to support Arduino 1.6.12+
+
 ### 1.0.4 - Aug 6, 2016
 * Updated library.properties to support all architectures
 
