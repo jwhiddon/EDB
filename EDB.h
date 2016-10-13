@@ -16,12 +16,13 @@ struct EDB_Header
   unsigned long table_size;
 };
 
-typedef enum EDB_Status { 
+/*typedef enum EDB_Status { */
+typedef enum { 
                           EDB_OK,
                           EDB_ERROR,
                           EDB_OUT_OF_RANGE,
                           EDB_TABLE_FULL
-                        };
+                        } EDB_Status;
 
 typedef byte* EDB_Rec;
 
