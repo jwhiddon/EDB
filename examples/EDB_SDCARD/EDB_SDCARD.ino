@@ -24,7 +24,7 @@
 // operations will return EDB_OUT_OF_RANGE for all records outside the usable range.
 #define RECORDS_TO_CREATE 10
 
-char* db_name = "/db/edb_test.db";
+char* db_name = "edb_test.db";
 File dbFile;
 
 // Arbitrary record definition for this table.
@@ -71,12 +71,6 @@ void setup()
     if (!SD.begin(SD_PIN)) {
         Serial.println("No SD-card.");
         return;
-    }
-
-    // Check dir for db files
-    if (!SD.exists("/db")) {
-        Serial.println("Dir for Db files does not exist, creating...");
-        SD.mkdir("/db");
     }
 
     if (SD.exists(db_name)) {
