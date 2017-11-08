@@ -13,16 +13,22 @@
 
 // low level byte write
 void EDB::edbWrite(unsigned long ee, const byte* p, unsigned int recsize)
-{
-  for (unsigned int i = 0; i < recsize; i++)
-    _write_byte(ee++, *p++);
+{	if(!_write_buffer){
+		for (unsigned int i = 0; i < recsize; i++)
+		_write_byte(ee++, *p++);
+	}else{
+		_write_buffer(ee,p,recsize);
+	}
 }
 
 // low level byte read
 void EDB::edbRead(unsigned long ee, byte* p, unsigned int recsize)
-{  
-  for (unsigned i = 0; i < recsize; i++)
-    *p++ = _read_byte(ee++);
+{	if(!_read_buffer){
+		for (unsigned i = 0; i < recsize; i++)
+		*p++ = _read_byte(ee++);
+	}else{
+		_read_buffer(ee,p,recsize);
+	}
 }
 
 // writes EDB_Header
@@ -44,9 +50,19 @@ EDB::EDB(EDB_Write_Handler *w, EDB_Read_Handler *r)
 {
   _write_byte = w;
   _read_byte = r;
+  _write_buffer = NULL;
+  _read_buffer = NULL;
 }
 
-// creates a new table and sets header values 
+EDB::EDB(EDB_Write_Buffer *w, EDB_Read_Buffer *r)
+{
+  _write_byte = NULL;
+  _read_byte = NULL;
+  _write_buffer = w;
+  _read_buffer = r;
+}
+
+// creates a new table and sets header values
 EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned int recsize)
 {
   EDB_head_ptr = head_ptr;
@@ -67,7 +83,7 @@ EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned
 EDB_Status EDB::open(unsigned long head_ptr)
 {
   EDB_head_ptr = head_ptr;
-  // Thanks to Steve Kelly for the next line... 
+  // Thanks to Steve Kelly for the next line...
   EDB_table_ptr = sizeof(EDB_Header) + EDB_head_ptr; // this line was originally missing in the downloaded library
   readHead();
   return EDB_OK;
@@ -89,7 +105,7 @@ EDB_Status EDB::readRec(unsigned long recno, EDB_Rec rec)
 }
 
 // Deletes a record at a given recno
-// Becomes more inefficient as you the record set increases and you delete records 
+// Becomes more inefficient as you the record set increases and you delete records
 // early in the record queue.
 EDB_Status EDB::deleteRec(unsigned long recno)
 {
@@ -99,7 +115,7 @@ EDB_Status EDB::deleteRec(unsigned long recno)
   {
     readRec(i, rec);
     writeRec(i - 1, rec);
-  }  
+  }
   free(rec);
   EDB_head.n_recs--;
   writeHead();
@@ -107,7 +123,7 @@ EDB_Status EDB::deleteRec(unsigned long recno)
 }
 
 // Inserts a record at a given recno, increasing all following records' recno by 1.
-// This function becomes increasingly inefficient as it's currently implemented and 
+// This function becomes increasingly inefficient as it's currently implemented and
 // is the slowest way to add a record.
 EDB_Status EDB::insertRec(unsigned long recno, EDB_Rec rec)
 {
@@ -122,7 +138,7 @@ EDB_Status EDB::insertRec(unsigned long recno, EDB_Rec rec)
     writeRec(i + 1, buf);
   }
   free(buf);
-  writeRec(recno, rec);  
+  writeRec(recno, rec);
   EDB_head.n_recs++;
   writeHead();
   return EDB_OK;
@@ -132,7 +148,7 @@ EDB_Status EDB::insertRec(unsigned long recno, EDB_Rec rec)
 EDB_Status EDB::updateRec(unsigned long recno, EDB_Rec rec)
 {
   if (recno < 0 || recno > EDB_head.n_recs) return EDB_OUT_OF_RANGE;
-  writeRec(recno, rec);  
+  writeRec(recno, rec);
   return EDB_OK;
 }
 

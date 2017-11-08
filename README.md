@@ -29,6 +29,12 @@ This is a re-implementation of the [Arduino Database Library](http://playground.
 
 ## Releases
 
+### 1.0.6 - Nov 2, 2017
+* Added a new buffer W/R handlers to increase speed in SPIFFS and SD Cards
+* Added EDB_SPIFFS_Optimized example
+* Added EDB_SDCARD_Optimized example
+* Fixed a Warning about typedef in Compilation
+
 ### 1.0.5 - Oct 4, 2016
 * Updated to support Arduino 1.6.12+
 
