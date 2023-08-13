@@ -86,7 +86,7 @@ EDB_Status EDB::open(unsigned long head_ptr)
   // Thanks to Steve Kelly for the next line...
   EDB_table_ptr = sizeof(EDB_Header) + EDB_head_ptr; // this line was originally missing in the downloaded library
   readHead();
-  return EDB_OK;
+  return (EDB_head.flag == EDB_FLAG ? EDB_OK : EDB_ERROR);
 }
 
 // writes a record to a given recno
@@ -172,6 +172,9 @@ unsigned long EDB::count()
 // returns the maximum number of items that will fit into the queue
 unsigned long EDB::limit()
 {
+
+   // in case of currept db, the record len could be a zero
+   if ( EDB_head.rec_size == 0 ) return 0;
    // Thanks to oleh.sok...@gmail.com for the next line
    return (EDB_head.table_size - sizeof(EDB_Header)) / EDB_head.rec_size;
 }
