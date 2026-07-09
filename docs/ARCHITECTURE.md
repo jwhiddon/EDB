@@ -48,3 +48,19 @@ See [FORMAT.md](FORMAT.md) and [MIGRATION.md](MIGRATION.md).
 3. `create(head_ptr, table_size, sizeof(record))` on first use.
 4. `open(head_ptr)` on subsequent runs after validating `EDB_OK`.
 5. Use `appendRec` for normal inserts; avoid `insertRec(1, ...)` on large tables.
+
+## Gateway and manager (host-side)
+
+```
+Browser (Web Crypto) → FastAPI Gateway → Serial transport → EDB_SerialBridge → EDB → storage
+```
+
+- **Gateway** (`services/edb-gateway/`): REST API, connection manager, ciphertext-only relay.
+- **Manager** (`/manager`): Connect, unlock passphrase locally, CRUD on encrypted payloads.
+- **Backend abstraction**: `DeviceBackend` today; `FileBackend` (Phase 2) will use `tools/edb_migrate.py`.
+
+The gateway never holds decryption keys. See [GATEWAY.md](GATEWAY.md) and [ENCRYPTION.md](ENCRYPTION.md).
+
+## Optional encryption (`EDB_Crypto.h`)
+
+Opt-in via `EDB_ENABLE_CRYPTO`. Per-record AEAD at rest; `e2e_blind` (opaque bytes on MCU) or `device_autonomous` (ESP32+). Core `EDB.h` API unchanged.

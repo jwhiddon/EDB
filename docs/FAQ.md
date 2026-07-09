@@ -69,4 +69,23 @@ Byte-mode handlers with `flush()` on every byte block the CPU for long inserts. 
 
 ## Can I read a `.db` file on my PC?
 
-Copy the file from SD/SPIFFS and use [tools/edb_migrate.py](../tools/edb_migrate.py) to inspect or convert format. For live export, read records over serial in your sketch.
+Copy the file from SD/SPIFFS and use [tools/edb_migrate.py](../tools/edb_migrate.py) to inspect or convert format. For live export, use the [EDB Gateway](GATEWAY.md) or read records over serial in your sketch.
+
+## What are `e2e_blind` and `device_autonomous` encryption?
+
+- **e2e_blind:** The device stores ciphertext only; the manager encrypts/decrypts in the browser. Strongest E2E; works on small AVRs without crypto libraries.
+- **device_autonomous:** ESP32+ firmware encrypts sensor data without the host. Table key is wrapped in the header.
+
+See [ENCRYPTION.md](ENCRYPTION.md).
+
+## Why doesn't the gateway decrypt my data?
+
+By design — the gateway is a dumb relay so a compromised PC cannot read your records from server memory or logs. Enter your passphrase in the manager UI only.
+
+## I lost my encryption passphrase
+
+There is no recovery. Back up wrapped keys when using autonomous mode.
+
+## Will encryption fit on Arduino Uno?
+
+The full gateway bridge + transport crypto does not fit in 2 KB SRAM. Use ESP32 for the bridge, or store pre-encrypted blobs on Uno with core EDB only. See [ENCRYPTION.md](ENCRYPTION.md) RAM tiers.

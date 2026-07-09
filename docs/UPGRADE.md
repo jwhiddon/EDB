@@ -171,6 +171,10 @@ Use this checklist for any upgrade that touches live data:
 
 Always keep a storage backup taken **before** upgrading to 2.0.0.
 
+### Optional encryption (`EDB_Crypto.h`)
+
+`EDB_Crypto.h` is **additive** — core `EDB.h` / `EDB.cpp` API is unchanged. Encryption is off unless you define `EDB_ENABLE_CRYPTO`. Existing sketches and databases without encryption extensions continue to work. See [ENCRYPTION.md](ENCRYPTION.md).
+
 ---
 
 ## Related documentation

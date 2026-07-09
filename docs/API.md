@@ -140,3 +140,23 @@ You must call `open()` before operating on each table. `count()` always reflects
 - Valid `recno` range for read/update/delete: `1` through `count()`.
 - `recno == 0` always returns `EDB_OUT_OF_RANGE`.
 - For insert on a non-empty table: `1` through `count()`.
+
+## Build flags
+
+Optional compile-time flags (define before `#include` or via `-D` in build properties). See [ENCRYPTION.md](ENCRYPTION.md).
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `EDB_ENABLE_CRYPTO` | off | Include `EDB_Crypto.h` record encryption |
+| `EDB_CRYPTO_DEVICE_AUTONOMOUS` | off | On-device encrypt/decrypt + NVS keys |
+| `EDB_CRYPTO_CIPHER_CHACHA20` | on if crypto | XChaCha20-Poly1305 (default) |
+| `EDB_CRYPTO_CIPHER_AES_GCM` | off | AES-128-GCM alternative (ESP32) |
+| `EDB_NO_MALLOC_SHIFT` | off | Byte-at-a-time shift; lower peak RAM |
+| `EDB_NO_GLOBAL` | off | Omit legacy `extern EDB edb` |
+| `EDB_TEST` | off | Test hooks (native tests only) |
+
+Bridge sketch flags (`examples/EDB_SerialBridge/config.h`): `EDB_BRIDGE_ENABLE_TRANSPORT_CRYPTO`, `EDB_BRIDGE_MAX_LINE`, `EDB_BRIDGE_ENABLE_BASE64`.
+
+## Gateway REST mapping
+
+The [EDB Gateway](GATEWAY.md) exposes the same semantics over HTTP. Encrypted tables use `stored_rec_size = plaintext_rec_size + 16` at `create()` time.

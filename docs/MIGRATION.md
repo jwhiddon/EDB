@@ -47,3 +47,7 @@ make -C test test
 ```
 
 Both test suites include migration round-trip checks.
+
+## Encrypting existing plaintext tables (Phase 2)
+
+Offline encrypt/decrypt of `.db` files via `edb_migrate.py` is planned for the host `FileBackend`. Until then, create a new encrypted table and copy records through the [Gateway](GATEWAY.md) manager.

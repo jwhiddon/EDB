@@ -93,7 +93,21 @@ void setup() {
 * [v1 to v2 migration](docs/MIGRATION.md)
 * [Testing](docs/TESTING.md)
 * [Migration tool](tools/README.md)
+* [Gateway & Manager](docs/GATEWAY.md) — REST API and web UI for device databases
+* [Encryption](docs/ENCRYPTION.md) — end-to-end and at-rest encryption
 * [1.0.7 drop-in release](release/1.0.7/README.md)
+
+## Gateway & Manager
+
+A host-side FastAPI service and web UI proxy EDB on microcontrollers over serial. The gateway relays **ciphertext only** when encryption is enabled; decryption happens in your browser.
+
+```bash
+cd services/edb-gateway
+pip install -e ".[dev]"
+uvicorn edb_gateway.main:app --host 127.0.0.1 --port 8765
+```
+
+Open [http://127.0.0.1:8765/manager](http://127.0.0.1:8765/manager). See [docs/GATEWAY.md](docs/GATEWAY.md).
 
 ## Examples
 
@@ -106,6 +120,7 @@ void setup() {
 * [SD Card optimized example](examples/EDB_SDCARD_Optimized)
 * [SPIFFS example](examples/EDB_SPIFFS)
 * [SPIFFS optimized example](examples/EDB_SPIFFS_Optimized)
+* [Serial bridge for gateway](examples/EDB_SerialBridge) — ESP32 + SD
 
 ## Testing
 

@@ -64,3 +64,25 @@ Record data begins at `head_ptr + 12`. The legacy AVR layout stores the low 16 b
 Record data begins at `head_ptr + 16`.
 
 Because v1 layouts differ, database files created on one MCU family are not reliably portable. Migrate to v2 for cross-platform use.
+
+## Encryption extension (v2.1 optional)
+
+When byte at `head_ptr + 12` is `0xE1` (`ext_magic`), an encryption descriptor follows before record data:
+
+| Offset from `head_ptr + 12` | Size | Field |
+|-----------------------------|------|-------|
+| 0 | 1 | `ext_magic` = `0xE1` |
+| 1 | 1 | `enc_version` (1 = chacha20_record_v1) |
+| 2 | 1 | `enc_mode` (0 = e2e_blind, 1 = device_autonomous) |
+| 3 | 1 | reserved |
+| 4 | 16 | `salt` |
+| 20 | 2 | `plaintext_rec_size` LE16 |
+| 22 | 2 | `stored_rec_size` LE16 |
+| 24 | 48 | `wrapped_table_key` (zero when `enc_mode` = blind; populated when autonomous) |
+
+**Fixed extension size: 72 bytes** for both modes so record data always starts at `head_ptr + 84` (`12` v2 header + `72` extension). The same `.db` layout works for `e2e_blind` and `device_autonomous`; only `enc_mode` and the wrapped-key slot differ.
+
+- `limit = (table_size - 84) / stored_rec_size` when encryption extension is present.
+- v2 readers that do not check `ext_magic` treat offset 12 as record data (legacy behavior).
+
+See [ENCRYPTION.md](ENCRYPTION.md).
