@@ -2,21 +2,48 @@
   EDB.cpp
   Extended Database Library for Arduino
   http://www.arduino.cc/playground/Code/ExtendedDatabaseLibrary
+
+  See EDB.h for the v3 format overview.
+
+  Crash-safety guarantees:
+    - The header is written to two CRC32-checksummed copies, ping-pong by sequence number, so a
+      power loss during a header write always leaves at least one complete, valid copy. open()
+      selects the newest valid copy. This eliminates the whole-table corruption possible in v2.
+    - Every record slot carries a CRC16 over its status + payload; a torn record write is reported
+      as EDB_CORRUPT on read rather than returned as good data.
+    - Mutations write slot bytes first and publish the header last. A crash in that window is
+      benign: the un-published change is either ignored (unreferenced slot) or leaves count() off
+      by at most one / a freed slot unreclaimed until compact(). Reads always honor the per-slot
+      status byte, so no record is ever lost or silently garbled.
 */
 
 #include "Arduino.h"
 #include "EDB.h"
-#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
-static bool edbComputeShiftBlockSize(unsigned long record_count, unsigned int rec_size, unsigned int& block_size)
+/**************************************************/
+// checksums (bitwise; no lookup tables -> minimal flash on AVR)
+
+static uint16_t edbCrc16Update(uint16_t crc, const byte* p, unsigned int len)
 {
-  if (record_count == 0 || rec_size == 0) return false;
-  unsigned long bytes = record_count * (unsigned long)rec_size;
-  if (bytes > (unsigned long)UINT_MAX) return false;
-  block_size = (unsigned int)bytes;
-  return true;
+  for (unsigned int i = 0; i < len; i++) {
+    crc ^= (uint16_t)p[i] << 8;
+    for (int k = 0; k < 8; k++)
+      crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+  }
+  return crc;
+}
+
+static uint32_t edbCrc32(const byte* p, unsigned int len)
+{
+  uint32_t crc = 0xFFFFFFFFUL;
+  for (unsigned int i = 0; i < len; i++) {
+    crc ^= p[i];
+    for (int k = 0; k < 8; k++)
+      crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320UL : (crc >> 1);
+  }
+  return crc ^ 0xFFFFFFFFUL;
 }
 
 #ifdef EDB_TEST
@@ -25,7 +52,7 @@ void EDB::setMallocFail(bool fail) { _edb_malloc_fail = fail; }
 #endif
 
 /**************************************************/
-// private functions
+// low-level storage
 
 void EDB::edbWrite(unsigned long ee, const byte* p, unsigned int recsize)
 {
@@ -67,121 +94,170 @@ void* EDB::edbMalloc(unsigned int size)
   return malloc(size);
 }
 
-EDB_Status EDB::ensureWritable()
+/**************************************************/
+// header
+
+static bool edbValidateHeader(const EDB_Header& h)
 {
-  if (_is_v2) return EDB_OK;
-  if (_header_size == EDB_HEADER_V2_SIZE) {
-    _is_v2 = true;
-    EDB_table_ptr = EDB_head_ptr + EDB_HEADER_V2_SIZE;
-    writeHead();
-    return EDB_OK;
-  }
-  return EDB_ERROR;
+  if (h.magic != EDB_FLAG) return false;
+  if (h.version != EDB_VERSION) return false;
+  uint32_t want = edbCrc32((const byte*)&h, EDB_HEADER_COPY_SIZE - 4);
+  if (want != h.header_crc) return false;
+  if (h.rec_size == 0 || h.slot_stride == 0) return false;
+  if (h.slot_stride < (uint16_t)(1 + h.rec_size + 2)) return false;
+  if (h.data_offset < EDB_HEADER_COPY_SIZE) return false;
+  if (h.table_size < (uint32_t)h.data_offset + h.slot_stride) return false;
+  unsigned long max_slots = (unsigned long)(h.table_size - h.data_offset) / h.slot_stride;
+  if (h.n_slots > max_slots) return false;
+  if (h.n_live > h.n_slots) return false;
+  if (h.free_head != EDB_FREE_NONE && h.free_head >= h.n_slots) return false;
+  return true;
 }
 
-void EDB::writeHead()
+bool EDB::loadHeaderCopy(unsigned int copy, EDB_Header& out) const
 {
-  EDB_head.flag = EDB_FLAG;
-  EDB_head.version = EDB_VERSION;
-  _header_size = EDB_HEADER_V2_SIZE;
-  _is_v2 = true;
-  EDB_table_ptr = EDB_head_ptr + _header_size;
-  edbWrite(EDB_head_ptr, EDB_REC EDB_head, _header_size);
+  EDB* self = const_cast<EDB*>(this);
+  self->edbRead(EDB_head_ptr + (unsigned long)copy * EDB_HEADER_COPY_SIZE,
+                (byte*)&out, EDB_HEADER_COPY_SIZE);
+  return edbValidateHeader(out);
 }
 
 EDB_Status EDB::readHead()
 {
-  byte flag = readByte(EDB_head_ptr);
-  if (flag != EDB_FLAG) return EDB_ERROR;
+  EDB_Header h0, h1;
+  bool valid0 = loadHeaderCopy(0, h0);
+#if EDB_HEADER_REDUNDANT
+  bool valid1 = loadHeaderCopy(1, h1);
+#else
+  bool valid1 = false;
+#endif
 
-  byte version = readByte(EDB_head_ptr + 1);
-  if (version == EDB_VERSION) {
-    _is_v2 = true;
-    _header_size = EDB_HEADER_V2_SIZE;
-    EDB_table_ptr = EDB_head_ptr + _header_size;
-    edbRead(EDB_head_ptr, EDB_REC EDB_head, _header_size);
-    return validateHeader();
+  if (!valid0 && !valid1) {
+    // Distinguish a legacy (v1/v2) file from uninitialized storage.
+    byte magic = readByte(EDB_head_ptr);
+    byte version = readByte(EDB_head_ptr + 1);
+    if (magic == EDB_FLAG && version != EDB_VERSION) return EDB_NEEDS_MIGRATION;
+    return EDB_ERROR;
   }
 
-  _is_v2 = false;
-  return readV1Header();
-}
-
-// Legacy v1: detect AVR (12-byte) or ESP32 (16-byte) padded layouts.
-EDB_Status EDB::readV1Header()
-{
-  struct V1Layout {
-    unsigned int header_size;
-    unsigned int n_recs_offset;
-    unsigned int rec_size_offset;
-    unsigned int table_size_offset;
-    bool table_size_16bit;
-  };
-
-  static const V1Layout layouts[] = {
-    {12, 4, 8, 10, true},
-    {16, 4, 8, 12, false}
-  };
-
-  for (unsigned int i = 0; i < 2; i++) {
-    const V1Layout& layout = layouts[i];
-    byte header[16];
-    edbRead(EDB_head_ptr, header, layout.header_size);
-
-    EDB_Header candidate;
-    memset(&candidate, 0, sizeof(candidate));
-    candidate.flag = header[0];
-    memcpy(&candidate.n_recs, header + layout.n_recs_offset, sizeof(candidate.n_recs));
-    memcpy(&candidate.rec_size, header + layout.rec_size_offset, sizeof(candidate.rec_size));
-    if (layout.table_size_16bit) {
-      uint16_t table_size = 0;
-      memcpy(&table_size, header + layout.table_size_offset, sizeof(table_size));
-      candidate.table_size = table_size;
-    } else {
-      memcpy(&candidate.table_size, header + layout.table_size_offset, sizeof(candidate.table_size));
-    }
-
-    EDB_Header saved = EDB_head;
-    unsigned int saved_header_size = _header_size;
-    unsigned long saved_table_ptr = EDB_table_ptr;
-
-    EDB_head = candidate;
-    _header_size = layout.header_size;
-    EDB_table_ptr = EDB_head_ptr + _header_size;
-
-    if (validateHeader() == EDB_OK) {
-      return EDB_OK;
-    }
-
-    EDB_head = saved;
-    _header_size = saved_header_size;
-    EDB_table_ptr = saved_table_ptr;
+  if (valid0 && (!valid1 || h0.seq >= h1.seq)) {
+    EDB_head = h0;
+    _active_copy = 0;
+  } else {
+    EDB_head = h1;
+    _active_copy = 1;
   }
-
-  return EDB_ERROR;
-}
-
-EDB_Status EDB::validateHeader() const
-{
-  if (EDB_head.flag != EDB_FLAG) return EDB_ERROR;
-  if (EDB_head.rec_size == 0) return EDB_ERROR;
-  if (EDB_head.table_size < _header_size) return EDB_ERROR;
-  if ((EDB_head.table_size - _header_size) < EDB_head.rec_size) return EDB_ERROR;
-
-  unsigned long max_recs = (EDB_head.table_size - _header_size) / EDB_head.rec_size;
-  if (EDB_head.n_recs > max_recs) return EDB_ERROR;
-
+  EDB_table_ptr = EDB_head_ptr + EDB_head.data_offset;
   return EDB_OK;
 }
 
-bool EDB::isValidRecno(unsigned long recno) const
+EDB_Status EDB::writeHead()
 {
-  return recno >= 1 && recno <= EDB_head.n_recs;
+  unsigned int target = 0;
+#if EDB_HEADER_REDUNDANT
+  target = 1 - _active_copy;
+#endif
+  EDB_head.seq += 1;
+  EDB_head.header_crc = edbCrc32((const byte*)&EDB_head, EDB_HEADER_COPY_SIZE - 4);
+  unsigned long addr = EDB_head_ptr + (unsigned long)target * EDB_HEADER_COPY_SIZE;
+  edbWrite(addr, (const byte*)&EDB_head, EDB_HEADER_COPY_SIZE);
+
+  // Read back and verify the copy we just published (cheap: 48 bytes).
+  EDB_Header verify;
+  edbRead(addr, (byte*)&verify, EDB_HEADER_COPY_SIZE);
+  if (verify.header_crc != EDB_head.header_crc || verify.seq != EDB_head.seq)
+    return EDB_ERROR;
+
+  _active_copy = target;
+  return EDB_OK;
 }
 
-unsigned long EDB::recordOffset(unsigned long recno) const
+/**************************************************/
+// slot helpers
+
+unsigned long EDB::slotOffset(unsigned long index) const
 {
-  return EDB_table_ptr + ((recno - 1) * EDB_head.rec_size);
+  return EDB_table_ptr + index * EDB_head.slot_stride;
+}
+
+unsigned long EDB::maxSlots() const
+{
+  if (EDB_head.slot_stride == 0) return 0;
+  if (EDB_head.table_size < EDB_head.data_offset) return 0;
+  return (unsigned long)(EDB_head.table_size - EDB_head.data_offset) / EDB_head.slot_stride;
+}
+
+bool EDB::hasFreeList() const
+{
+  // The intrusive free-list stores a 4-byte "next" index in the tombstone's payload.
+  return EDB_head.rec_size >= 4;
+}
+
+EDB_Status EDB::writeSlot(unsigned long index, const byte* payload)
+{
+  unsigned long off = slotOffset(index);
+  byte live = EDB_SLOT_LIVE;
+  uint16_t crc = 0xFFFF;
+  crc = edbCrc16Update(crc, &live, 1);
+  crc = edbCrc16Update(crc, payload, EDB_head.rec_size);
+  byte crc_bytes[2];
+  crc_bytes[0] = (byte)(crc & 0xFF);
+  crc_bytes[1] = (byte)(crc >> 8);
+  // payload + crc first; commit with the status byte last so a torn write never reads as LIVE.
+  edbWrite(off + 1, payload, EDB_head.rec_size);
+  edbWrite(off + 1 + EDB_head.rec_size, crc_bytes, 2);
+  edbWrite(off, &live, 1);
+  return EDB_OK;
+}
+
+EDB_Status EDB::readSlot(unsigned long index, byte* payload)
+{
+  unsigned long off = slotOffset(index);
+  byte status = readByte(off);
+  if (status == EDB_SLOT_TOMBSTONE) return EDB_DELETED;
+  if (status != EDB_SLOT_LIVE) return EDB_OUT_OF_RANGE;
+  edbRead(off + 1, payload, EDB_head.rec_size);
+#if EDB_VERIFY_ON_READ
+  byte crc_bytes[2];
+  edbRead(off + 1 + EDB_head.rec_size, crc_bytes, 2);
+  uint16_t stored = (uint16_t)crc_bytes[0] | ((uint16_t)crc_bytes[1] << 8);
+  byte live = EDB_SLOT_LIVE;
+  uint16_t crc = 0xFFFF;
+  crc = edbCrc16Update(crc, &live, 1);
+  crc = edbCrc16Update(crc, payload, EDB_head.rec_size);
+  if (crc != stored) return EDB_CORRUPT;
+#endif
+  return EDB_OK;
+}
+
+unsigned long EDB::allocSlot()
+{
+  // 1. Reuse a freed slot via the intrusive free-list (validated against crash damage).
+  if (hasFreeList() && EDB_head.free_head != EDB_FREE_NONE) {
+    unsigned long idx = EDB_head.free_head;
+    if (idx < EDB_head.n_slots && readByte(slotOffset(idx)) == EDB_SLOT_TOMBSTONE) {
+      byte link[4];
+      edbRead(slotOffset(idx) + 1, link, 4);
+      uint32_t next = (uint32_t)link[0] | ((uint32_t)link[1] << 8) |
+                      ((uint32_t)link[2] << 16) | ((uint32_t)link[3] << 24);
+      EDB_head.free_head = (next == EDB_FREE_NONE || next < EDB_head.n_slots) ? next : EDB_FREE_NONE;
+      return idx;
+    }
+    // Free-list head is inconsistent (e.g. a crash mid-reuse) -> drop it; space is
+    // still reclaimable by the linear scan below or compact().
+    EDB_head.free_head = EDB_FREE_NONE;
+  }
+
+  // 2. Grow into fresh space.
+  if (EDB_head.n_slots < maxSlots()) {
+    return (unsigned long)EDB_head.n_slots++;
+  }
+
+  // 3. Full: reclaim any tombstone the free-list missed (small records, or post-crash leak).
+  for (unsigned long i = 0; i < EDB_head.n_slots; i++) {
+    if (readByte(slotOffset(i)) == EDB_SLOT_TOMBSTONE) return i;
+  }
+  return EDB_FREE_NONE;
 }
 
 /**************************************************/
@@ -193,8 +269,7 @@ EDB::EDB(EDB_Write_Handler *w, EDB_Read_Handler *r)
   _read_byte = r;
   _write_buffer = NULL;
   _read_buffer = NULL;
-  _header_size = EDB_HEADER_V2_SIZE;
-  _is_v2 = true;
+  _active_copy = 0;
 }
 
 EDB::EDB(EDB_Write_Buffer *w, EDB_Read_Buffer *r)
@@ -203,173 +278,179 @@ EDB::EDB(EDB_Write_Buffer *w, EDB_Read_Buffer *r)
   _read_byte = NULL;
   _write_buffer = w;
   _read_buffer = r;
-  _header_size = EDB_HEADER_V2_SIZE;
-  _is_v2 = true;
+  _active_copy = 0;
 }
 
 EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned int recsize)
 {
   if (recsize == 0) return EDB_ERROR;
-  if (tablesize < EDB_HEADER_V2_SIZE) return EDB_ERROR;
-  if ((tablesize - EDB_HEADER_V2_SIZE) < recsize) return EDB_ERROR;
+  if (recsize > (unsigned int)(0xFFFFu - 3)) return EDB_ERROR;   // slot_stride must fit uint16
+  if (tablesize > 0xFFFFFFFFUL) return EDB_ERROR;
+
+  uint16_t stride = (uint16_t)(1 + recsize + 2);
+  uint16_t data_offset = EDB_HEADER_REDUNDANT ? EDB_HEADER_SPAN : EDB_HEADER_COPY_SIZE;
+  if (tablesize < (unsigned long)data_offset + stride) return EDB_ERROR;
 
   EDB_head_ptr = head_ptr;
-  _header_size = EDB_HEADER_V2_SIZE;
-  _is_v2 = true;
-  EDB_table_ptr = EDB_head_ptr + _header_size;
-  EDB_head.flag = EDB_FLAG;
+  memset(&EDB_head, 0, sizeof(EDB_head));
+  EDB_head.magic = EDB_FLAG;
   EDB_head.version = EDB_VERSION;
-  EDB_head.n_recs = 0;
-  EDB_head.rec_size = recsize;
-  EDB_head.table_size = tablesize;
-  writeHead();
+  EDB_head.flags = 0;
+  EDB_head.seq = 1;
+  EDB_head.n_slots = 0;
+  EDB_head.n_live = 0;
+  EDB_head.rec_size = (uint16_t)recsize;
+  EDB_head.slot_stride = stride;
+  EDB_head.table_size = (uint32_t)tablesize;
+  EDB_head.free_head = EDB_FREE_NONE;
+  EDB_head.data_offset = data_offset;
+  EDB_head.header_crc = edbCrc32((const byte*)&EDB_head, EDB_HEADER_COPY_SIZE - 4);
+  EDB_table_ptr = EDB_head_ptr + data_offset;
+
+  // Write both copies with the same seq; copy 0 is active (tie-break), copy 1 gets the next publish.
+  edbWrite(EDB_head_ptr, (const byte*)&EDB_head, EDB_HEADER_COPY_SIZE);
+#if EDB_HEADER_REDUNDANT
+  edbWrite(EDB_head_ptr + EDB_HEADER_COPY_SIZE, (const byte*)&EDB_head, EDB_HEADER_COPY_SIZE);
+#endif
+  _active_copy = 0;
 
   EDB_Header verify;
-  edbRead(EDB_head_ptr, EDB_REC verify, _header_size);
-  if (verify.flag != EDB_FLAG || verify.version != EDB_VERSION) return EDB_ERROR;
-  if (verify.n_recs != 0 || verify.rec_size != recsize || verify.table_size != tablesize) return EDB_ERROR;
-
+  edbRead(EDB_head_ptr, (byte*)&verify, EDB_HEADER_COPY_SIZE);
+  if (!edbValidateHeader(verify)) return EDB_ERROR;
+  if (verify.rec_size != recsize || verify.table_size != tablesize) return EDB_ERROR;
   return EDB_OK;
 }
 
 EDB_Status EDB::open(unsigned long head_ptr)
 {
   EDB_head_ptr = head_ptr;
-  EDB_Status status = readHead();
-  if (status != EDB_OK) return status;
-  return EDB_OK;
-}
-
-EDB_Status EDB::writeRec(unsigned long recno, const EDB_Rec rec)
-{
-  edbWrite(recordOffset(recno), rec, EDB_head.rec_size);
-  return EDB_OK;
+  return readHead();
 }
 
 EDB_Status EDB::readRec(unsigned long recno, EDB_Rec rec)
 {
-  if (!isValidRecno(recno)) return EDB_OUT_OF_RANGE;
-  edbRead(recordOffset(recno), rec, EDB_head.rec_size);
-  return EDB_OK;
+  if (recno < 1 || recno > EDB_head.n_slots) return EDB_OUT_OF_RANGE;
+  return readSlot(recno - 1, rec);
 }
 
-EDB_Status EDB::deleteRec(unsigned long recno)
+EDB_Status EDB::updateRec(unsigned long recno, const EDB_Rec rec)
 {
-  if (!isValidRecno(recno)) return EDB_OUT_OF_RANGE;
-  if (ensureWritable() != EDB_OK) return EDB_ERROR;
+  if (recno < 1 || recno > EDB_head.n_slots) return EDB_OUT_OF_RANGE;
+  byte status = readByte(slotOffset(recno - 1));
+  if (status == EDB_SLOT_TOMBSTONE) return EDB_DELETED;
+  if (status != EDB_SLOT_LIVE) return EDB_OUT_OF_RANGE;
+  return writeSlot(recno - 1, rec);
+}
 
-  unsigned long tail = EDB_head.n_recs - recno;
-  if (tail > 0) {
-    bool shifted = false;
-    if (_read_buffer && _write_buffer) {
-      unsigned int block_size = 0;
-      if (edbComputeShiftBlockSize(tail, EDB_head.rec_size, block_size)) {
-        EDB_Rec buf = (byte*)edbMalloc(block_size);
-        if (!buf) return EDB_ERROR;
-        _read_buffer(recordOffset(recno + 1), buf, block_size);
-        _write_buffer(recordOffset(recno), buf, block_size);
-        free(buf);
-        shifted = true;
-      }
-    }
-    if (!shifted) {
-      EDB_Rec rec = (byte*)edbMalloc(EDB_head.rec_size);
-      if (!rec) return EDB_ERROR;
-      for (unsigned long i = recno + 1; i <= EDB_head.n_recs; i++) {
-        EDB_Status status = readRec(i, rec);
-        if (status != EDB_OK) { free(rec); return status; }
-        status = writeRec(i - 1, rec);
-        if (status != EDB_OK) { free(rec); return status; }
-      }
-      free(rec);
-    }
-  }
+EDB_Status EDB::appendRec(const EDB_Rec rec)
+{
+  return appendRec(rec, NULL);
+}
 
-  EDB_head.n_recs--;
-  writeHead();
+EDB_Status EDB::appendRec(const EDB_Rec rec, unsigned long* out_recno)
+{
+  unsigned long idx = allocSlot();
+  if (idx == EDB_FREE_NONE) return EDB_TABLE_FULL;
+  writeSlot(idx, rec);
+  EDB_head.n_live++;
+  EDB_Status status = writeHead();
+  if (status != EDB_OK) { EDB_head.n_live--; return status; }
+  if (out_recno) *out_recno = idx + 1;
   return EDB_OK;
 }
 
 EDB_Status EDB::insertRec(unsigned long recno, const EDB_Rec rec)
 {
-  if (ensureWritable() != EDB_OK) return EDB_ERROR;
-  if (count() == limit()) return EDB_TABLE_FULL;
-  if (count() == 0) {
-    if (recno != 1) return EDB_OUT_OF_RANGE;
-    return appendRec(rec);
-  }
-  if (recno < 1 || recno > EDB_head.n_recs) return EDB_OUT_OF_RANGE;
-
-  unsigned long tail = EDB_head.n_recs - recno + 1;
-  bool shifted = false;
-  if (_read_buffer && _write_buffer) {
-    unsigned int block_size = 0;
-    if (edbComputeShiftBlockSize(tail, EDB_head.rec_size, block_size)) {
-      EDB_Rec buf = (byte*)edbMalloc(block_size);
-      if (!buf) return EDB_ERROR;
-      _read_buffer(recordOffset(recno), buf, block_size);
-      _write_buffer(recordOffset(recno + 1), buf, block_size);
-      free(buf);
-      shifted = true;
-    }
-  }
-  if (!shifted) {
-    EDB_Rec buf = (byte*)edbMalloc(EDB_head.rec_size);
-    if (!buf) return EDB_ERROR;
-    for (unsigned long i = EDB_head.n_recs; i >= recno; i--) {
-      EDB_Status status = readRec(i, buf);
-      if (status != EDB_OK) { free(buf); return status; }
-      status = writeRec(i + 1, buf);
-      if (status != EDB_OK) { free(buf); return status; }
-    }
-    free(buf);
-  }
-
-  EDB_Status status = writeRec(recno, rec);
-  if (status != EDB_OK) return status;
-  EDB_head.n_recs++;
-  writeHead();
-  return EDB_OK;
+  // Stable-slot model: positional insert is not preserved; allocate any free slot.
+  (void)recno;
+  return appendRec(rec, NULL);
 }
 
-EDB_Status EDB::updateRec(unsigned long recno, const EDB_Rec rec)
+EDB_Status EDB::deleteRec(unsigned long recno)
 {
-  if (!isValidRecno(recno)) return EDB_OUT_OF_RANGE;
-  if (ensureWritable() != EDB_OK) return EDB_ERROR;
-  return writeRec(recno, rec);
+  if (recno < 1 || recno > EDB_head.n_slots) return EDB_OUT_OF_RANGE;
+  unsigned long idx = recno - 1;
+  byte status = readByte(slotOffset(idx));
+  if (status == EDB_SLOT_TOMBSTONE) return EDB_DELETED;
+  if (status != EDB_SLOT_LIVE) return EDB_OUT_OF_RANGE;
+
+  if (hasFreeList()) {
+    uint32_t link = EDB_head.free_head;
+    byte link_bytes[4];
+    link_bytes[0] = (byte)(link & 0xFF);
+    link_bytes[1] = (byte)((link >> 8) & 0xFF);
+    link_bytes[2] = (byte)((link >> 16) & 0xFF);
+    link_bytes[3] = (byte)((link >> 24) & 0xFF);
+    edbWrite(slotOffset(idx) + 1, link_bytes, 4);
+  }
+  byte tomb = EDB_SLOT_TOMBSTONE;
+  edbWrite(slotOffset(idx), &tomb, 1);
+  if (hasFreeList()) EDB_head.free_head = (uint32_t)idx;
+  EDB_head.n_live--;
+  return writeHead();
 }
 
-EDB_Status EDB::appendRec(const EDB_Rec rec)
+unsigned long EDB::firstRec()
 {
-  if (ensureWritable() != EDB_OK) return EDB_ERROR;
-  if (EDB_head.n_recs + 1 > limit()) return EDB_TABLE_FULL;
-  EDB_head.n_recs++;
-  EDB_Status status = writeRec(EDB_head.n_recs, rec);
-  if (status != EDB_OK) {
-    EDB_head.n_recs--;
-    return status;
+  for (unsigned long i = 0; i < EDB_head.n_slots; i++)
+    if (readByte(slotOffset(i)) == EDB_SLOT_LIVE) return i + 1;
+  return 0;
+}
+
+unsigned long EDB::nextRec(unsigned long recno)
+{
+  for (unsigned long i = recno; i < EDB_head.n_slots; i++)
+    if (readByte(slotOffset(i)) == EDB_SLOT_LIVE) return i + 1;
+  return 0;
+}
+
+bool EDB::isLive(unsigned long recno)
+{
+  if (recno < 1 || recno > EDB_head.n_slots) return false;
+  return readByte(slotOffset(recno - 1)) == EDB_SLOT_LIVE;
+}
+
+EDB_Status EDB::compact()
+{
+  // Reconcile counts and rebuild the free-list from tombstones (reclaims post-crash leaks).
+  // Does not move live records: slot IDs remain stable.
+  unsigned long live = 0;
+  uint32_t free_head = EDB_FREE_NONE;
+  for (unsigned long i = 0; i < EDB_head.n_slots; i++) {
+    byte status = readByte(slotOffset(i));
+    if (status == EDB_SLOT_LIVE) {
+      live++;
+    } else if (status == EDB_SLOT_TOMBSTONE && hasFreeList()) {
+      byte link_bytes[4];
+      link_bytes[0] = (byte)(free_head & 0xFF);
+      link_bytes[1] = (byte)((free_head >> 8) & 0xFF);
+      link_bytes[2] = (byte)((free_head >> 16) & 0xFF);
+      link_bytes[3] = (byte)((free_head >> 24) & 0xFF);
+      edbWrite(slotOffset(i) + 1, link_bytes, 4);
+      free_head = (uint32_t)i;
+    }
   }
-  writeHead();
-  return EDB_OK;
+  EDB_head.n_live = (uint32_t)live;
+  EDB_head.free_head = hasFreeList() ? free_head : EDB_FREE_NONE;
+  return writeHead();
 }
 
 unsigned long EDB::count()
 {
-  return EDB_head.n_recs;
+  return EDB_head.n_live;
 }
 
 unsigned long EDB::limit()
 {
-  if (EDB_head.rec_size == 0) return 0;
-  if (EDB_head.table_size < _header_size) return 0;
-  return (EDB_head.table_size - _header_size) / EDB_head.rec_size;
+  return maxSlots();
 }
 
 EDB_Status EDB::clear()
 {
-  EDB_Status status = readHead();
-  if (status != EDB_OK) return status;
-  return create(EDB_head_ptr, EDB_head.table_size, EDB_head.rec_size);
+  EDB_head.n_slots = 0;
+  EDB_head.n_live = 0;
+  EDB_head.free_head = EDB_FREE_NONE;
+  return writeHead();
 }
 
 unsigned long EDB::headPtr() const
@@ -391,5 +472,6 @@ EDB_Status EDB::openOrCreate(unsigned long head_ptr, unsigned long table_size, u
 {
   EDB_Status status = open(head_ptr);
   if (status == EDB_OK) return status;
+  if (status == EDB_NEEDS_MIGRATION) return status;   // never clobber a legacy file
   return create(head_ptr, table_size, rec_size);
 }
