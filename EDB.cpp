@@ -463,6 +463,11 @@ unsigned long EDB::tableSize() const
   return EDB_head.table_size;
 }
 
+unsigned int EDB::recSize() const
+{
+  return EDB_head.rec_size;
+}
+
 unsigned long EDB::nextTableOffset(unsigned long head_ptr, unsigned long table_size)
 {
   return head_ptr + table_size;

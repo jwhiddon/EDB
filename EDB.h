@@ -114,6 +114,7 @@ class EDB {
     EDB_Status clear();
     unsigned long headPtr() const;
     unsigned long tableSize() const;
+    unsigned int recSize() const;   // stored bytes per record of the open table
     static unsigned long nextTableOffset(unsigned long head_ptr, unsigned long table_size);
     EDB_Status openOrCreate(unsigned long head_ptr, unsigned long table_size, unsigned int rec_size);
 #ifdef EDB_TEST
