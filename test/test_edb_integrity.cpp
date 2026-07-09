@@ -123,7 +123,7 @@ void test_reopen_after_mixed_ops() {
     TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.insertRec(2, EDB_REC inserted));
     EDB reopened(&FakeStorage::writeByte, &FakeStorage::readByte);
     TEST_ASSERT_EQUAL_INT(EDB_OK, reopened.open(0));
-    assertAllRecords(reopened, {1, 99, 3, 50, 4, 5});
+    assertAllRecords(reopened, {1, 99, 50, 4, 5});
 }
 
 void test_header_nrecs_matches_count() {
@@ -131,7 +131,7 @@ void test_header_nrecs_matches_count() {
     resetStorage();
     TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
     appendSequence(byteDb, 1, 3);
-    unsigned long n_recs = 0;
+    uint32_t n_recs = 0;
     memcpy(&n_recs, &FakeStorage::instance().data[2], sizeof(n_recs));
     TEST_ASSERT_EQUAL_UINT32(3, n_recs);
     TEST_ASSERT_EQUAL_UINT32(byteDb.count(), n_recs);

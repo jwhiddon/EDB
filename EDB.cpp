@@ -73,6 +73,7 @@ EDB_Status EDB::ensureWritable()
   if (_header_size == EDB_HEADER_V2_SIZE) {
     _is_v2 = true;
     EDB_table_ptr = EDB_head_ptr + EDB_HEADER_V2_SIZE;
+    writeHead();
     return EDB_OK;
   }
   return EDB_ERROR;
