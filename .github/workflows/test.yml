@@ -74,16 +74,21 @@ jobs:
             examples/EDB_Internal_EEPROM/EDB_Internal_EEPROM.ino \
             examples/EDB_SDCARD/EDB_SDCARD.ino \
             examples/EDB_SDCARD_Optimized/EDB_SDCARD_Optimized.ino \
-            examples/EDB_MultiTable/EDB_MultiTable.ino; do
+            examples/EDB_MultiTable/EDB_MultiTable.ino \
+            examples/EDB_Iteration/EDB_Iteration.ino \
+            examples/EDB_Integrity/EDB_Integrity.ino \
+            examples/EDB_Migration/EDB_Migration.ino; do
             echo "Compiling $sketch for arduino:avr:uno"
             arduino-cli compile --library . --fqbn arduino:avr:uno "$(dirname "$sketch")"
           done
-      - name: Compile ESP32 SerialBridge (with transport crypto)
+      - name: Compile crypto examples (ESP32, with EDB_ENABLE_CRYPTO)
         run: |
           if arduino-cli core list | grep -q esp32:esp32; then
-            arduino-cli compile --library . --fqbn esp32:esp32:esp32 \
-              --build-property "compiler.cpp.extra_flags=-DEDB_ENABLE_CRYPTO" \
-              examples/EDB_SerialBridge
+            for sketch in examples/EDB_SerialBridge examples/EDB_Encrypted; do
+              echo "Compiling $sketch for esp32:esp32:esp32"
+              arduino-cli compile --library . --fqbn esp32:esp32:esp32 \
+                --build-property "compiler.cpp.extra_flags=-DEDB_ENABLE_CRYPTO" "$sketch"
+            done
           else
-            echo "ESP32 core not available; skipping SerialBridge compile"
+            echo "ESP32 core not available; skipping crypto example compile"
           fi
