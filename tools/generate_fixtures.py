@@ -45,6 +45,14 @@ def main() -> None:
     esp32 = build_v1_esp32(4, [10, 20, 30, 40], 128)
     (FIXTURES / "v1_master_avr_8rec.db").write_bytes(avr)
     (FIXTURES / "v1_master_esp32_4rec.db").write_bytes(esp32)
+
+    # Cross-language check: migrate the AVR v1 file to v3 with the Python tool so the native
+    # C++ test can open it. This confirms both implementations agree on the v3 CRC layout.
+    from edb_migrate import migrate_bytes
+
+    v3_avr, _, _ = migrate_bytes(avr, "avr")
+    (FIXTURES / "v3_migrated_avr_8rec.db").write_bytes(v3_avr)
+
     print(f"Wrote fixtures to {FIXTURES}")
 
 

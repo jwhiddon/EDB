@@ -56,6 +56,23 @@ void test_open_master_esp32_fixture() {
 #endif
 }
 
+// Cross-language: a file migrated to v3 by tools/edb_migrate.py must open on the C++ device
+// (proves the Python and C++ CRC32/CRC16 layouts agree).
+void test_open_migrated_v3_fixture() {
+#if EDB_VERSION
+    std::vector<uint8_t> fixture;
+    if (!loadFixtureFile("fixtures/v3_migrated_avr_8rec.db", fixture)) {
+        printf("SKIP fixtures/v3_migrated_avr_8rec.db not found\n");
+        return;
+    }
+    resetStorage();
+    FakeStorage::instance().load(fixture);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, compatDb.open(0));
+    TEST_ASSERT_EQUAL_UINT32(8, compatDb.count());
+    assertLiveSequence(compatDb, {1, 2, 3, 4, 5, 6, 7, 8});
+#endif
+}
+
 void test_api_symbols_present() {
     TEST_ASSERT_TRUE(true);
 }
@@ -67,6 +84,7 @@ int run_compat_tests() {
     RUN_TEST(test_create_zero_recsize);
     RUN_TEST(test_open_master_avr_fixture);
     RUN_TEST(test_open_master_esp32_fixture);
+    RUN_TEST(test_open_migrated_v3_fixture);
     RUN_TEST(test_api_symbols_present);
     return UNITY_END();
 }
