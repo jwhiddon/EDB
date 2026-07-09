@@ -4,24 +4,42 @@
   http://www.arduino.cc/playground/Code/ExtendedDatabaseLibrary
 */
 
+#ifndef EDB_H
+#define EDB_H
+
 #ifndef EDB_PROM
 #define EDB_PROM
-#define EDB_FLAG B11011011
+#endif
 
-struct EDB_Header
+#define EDB_FLAG 0xDB
+#define EDB_VERSION 2
+#define EDB_HEADER_V2_SIZE 12
+
+#if defined(__GNUC__)
+#define EDB_PACKED __attribute__((packed))
+#else
+#define EDB_PACKED
+#endif
+
+struct EDB_PACKED EDB_Header
 {
   byte flag;
+  byte version;
   unsigned long n_recs;
   unsigned int rec_size;
   unsigned long table_size;
 };
 
+#if defined(__cplusplus) && __cplusplus >= 201103L && !defined(EDB_TEST)
+static_assert(sizeof(EDB_Header) == EDB_HEADER_V2_SIZE, "EDB_Header must be 12 bytes");
+#endif
+
 enum EDB_Status {
-                          EDB_OK,
-                          EDB_ERROR,
-                          EDB_OUT_OF_RANGE,
-                          EDB_TABLE_FULL
-                        };
+  EDB_OK,
+  EDB_ERROR,
+  EDB_OUT_OF_RANGE,
+  EDB_TABLE_FULL
+};
 
 typedef byte* EDB_Rec;
 
@@ -41,13 +59,22 @@ class EDB {
     EDB_Status deleteRec(unsigned long);
     EDB_Status insertRec(unsigned long, const EDB_Rec);
     EDB_Status updateRec(unsigned long, const EDB_Rec);
-    EDB_Status appendRec(EDB_Rec rec);
+    EDB_Status appendRec(const EDB_Rec rec);
     unsigned long limit();
     unsigned long count();
-    void clear();
+    EDB_Status clear();
+    unsigned long headPtr() const;
+    unsigned long tableSize() const;
+    static unsigned long nextTableOffset(unsigned long head_ptr, unsigned long table_size);
+    EDB_Status openOrCreate(unsigned long head_ptr, unsigned long table_size, unsigned int rec_size);
+#ifdef EDB_TEST
+    static void setMallocFail(bool fail);
+#endif
   private:
     unsigned long EDB_head_ptr;
     unsigned long EDB_table_ptr;
+    unsigned int _header_size;
+    bool _is_v2;
     EDB_Write_Handler *_write_byte;
     EDB_Read_Handler *_read_byte;
     EDB_Write_Buffer *_write_buffer;
@@ -56,10 +83,21 @@ class EDB {
     void edbWrite(unsigned long ee, const byte* p, unsigned int);
     void edbRead(unsigned long ee, byte* p, unsigned int);
     void writeHead();
-    void readHead();
+    EDB_Status readHead();
+    EDB_Status validateHeader() const;
+    bool isValidRecno(unsigned long recno) const;
+    unsigned long recordOffset(unsigned long recno) const;
     EDB_Status writeRec(unsigned long, const EDB_Rec);
+    EDB_Status readV1Header();
+    EDB_Status ensureWritable();
+    byte readByte(unsigned long address) const;
+    void* edbMalloc(unsigned int size);
 };
 
+#ifndef EDB_NO_GLOBAL
+// Legacy 1.0.x header declared a global instance; sketches that use `EDB edb(...)`
+// must still provide the definition. Multiple tables use separate EDB objects instead.
 extern EDB edb;
+#endif
 
 #endif
