@@ -45,10 +45,6 @@ class RecordPayload(BaseModel):
     payload_b64: str = Field(min_length=1, max_length=MAX_PAYLOAD_B64)
 
 
-class PairRequest(BaseModel):
-    pairing_token: str
-
-
 class ProtocolMessage(BaseModel):
     id: int
     cmd: str

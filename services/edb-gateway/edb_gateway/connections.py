@@ -29,7 +29,6 @@ class ConnectionManager:
         port: str,
         baud: int = 115200,
         encrypt: bool = True,
-        pairing_token: str | None = None,
         mock: bool = False,
     ) -> Connection:
         if encrypt:

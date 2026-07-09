@@ -98,7 +98,7 @@ Returns the stored record size (bytes) of the open table.
 
 Re-reads the header and recreates the table with the same `table_size` and `rec_size`, resetting `count()` to 0. Upgrades storage to v2.
 
-This is a **destructive logical wipe**: it does not securely erase old record bytes from EEPROM/flash/SD — stale data may remain until overwritten. It is not a substitute for v1→v2 migration when you need to preserve records (use [MIGRATION.md](MIGRATION.md) instead).
+This is a **destructive logical wipe**: it does not securely erase old record bytes from EEPROM/flash/SD — stale data may remain until overwritten. It is not a substitute for migrating a legacy file to v3 when you need to preserve records (use [MIGRATION.md](MIGRATION.md) instead).
 
 ## `unsigned long count()`
 

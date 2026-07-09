@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 
 from ..auth import require_api_key
 from ..connections import connections
-from ..models import EdbStatus, PairRequest, RecordPayload, STATUS_HTTP, TableCreateRequest
+from ..models import EdbStatus, RecordPayload, STATUS_HTTP, TableCreateRequest
 from ..transports.serial import list_serial_ports
 
 # Per-record overhead added by the at-rest crypto envelope (nonce + tag).
@@ -35,7 +35,6 @@ async def create_connection(body: dict):
             port=body.get("port", "mock"),
             baud=int(body.get("baud", 115200)),
             encrypt=bool(body.get("encrypt", True)),
-            pairing_token=body.get("pairing_token"),
             mock=mock,
         )
     except PermissionError as e:
@@ -54,14 +53,15 @@ async def delete_connection(conn_id: str):
 
 
 @router.post("/connections/{conn_id}/pair")
-async def pair_connection(conn_id: str, body: PairRequest):
+async def pair_connection(conn_id: str):
+    # Encrypted connections auto-pair on open via the shared PSK; this re-runs the handshake.
     conn = connections.get(conn_id)
     if not conn:
         raise HTTPException(404, "connection not found")
     from ..transports.encrypted import EncryptedTransport
 
     if isinstance(conn.transport, EncryptedTransport):
-        await conn.transport.pair(body.pairing_token)
+        await conn.transport.pair()
         return {"status": "paired"}
     raise HTTPException(400, "connection does not support pairing")
 

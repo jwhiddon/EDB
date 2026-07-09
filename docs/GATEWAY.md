@@ -39,9 +39,9 @@ All paths are relative to the gateway base URL. Record bodies use `payload_b64` 
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
 | `GET` | `/devices` | — | List serial ports |
-| `POST` | `/connections` | `{ "transport": "serial", "port": "COM3", "baud": 115200, "encrypt": true, "pairing_token": "optional" }` | Open connection |
+| `POST` | `/connections` | `{ "transport": "serial", "port": "COM3", "baud": 115200, "encrypt": true }` | Open connection (encrypted needs `EDB_GATEWAY_PSK`) |
 | `DELETE` | `/connections/{id}` | — | Close connection |
-| `POST` | `/connections/{id}/pair` | `{ "pairing_token": "..." }` | Complete transport pairing |
+| `POST` | `/connections/{id}/pair` | — | Re-run the PSK handshake (auto-runs on open) |
 
 `POST /connections/{id}/unlock` returns **501** — unlock happens in the browser only.
 
