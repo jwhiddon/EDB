@@ -12,6 +12,10 @@
 static const char DB_PATH[] = "/edb_bridge.db";
 File dbFile;
 
+// Largest stored record this sketch will read into a stack buffer. Tables whose on-disk
+// record size exceeds this are refused rather than risk a buffer overflow.
+#define REC_BUF_SIZE 128
+
 struct TableConfig {
   unsigned long head_ptr;
   unsigned long table_size;
@@ -53,6 +57,9 @@ static const char *statusStr(EDB_Status s) {
     case EDB_ERROR: return "EDB_ERROR";
     case EDB_OUT_OF_RANGE: return "EDB_OUT_OF_RANGE";
     case EDB_TABLE_FULL: return "EDB_TABLE_FULL";
+    case EDB_DELETED: return "EDB_DELETED";
+    case EDB_CORRUPT: return "EDB_CORRUPT";
+    case EDB_NEEDS_MIGRATION: return "EDB_NEEDS_MIGRATION";
     default: return "EDB_ERROR";
   }
 }
@@ -177,6 +184,14 @@ static void handleCommand(const char *json) {
     return;
   }
 
+#if EDB_BRIDGE_ENABLE_TRANSPORT_CRYPTO
+  // All database commands require an established session when transport crypto is enabled.
+  if (!session_active) {
+    Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\",\"data\":{\"error\":\"not_paired\"}}\n", id);
+    return;
+  }
+#endif
+
   if (!sd_ok) {
     Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id);
     return;
@@ -202,41 +217,51 @@ static void handleCommand(const char *json) {
     long rs = jsonLong(json, "rec_size");
     if (ts < 0) ts = (long)tc->table_size;
     if (rs < 0) rs = (long)tc->rec_size;
+    // Refuse record sizes that would overflow rec_buf on a later readRec/appendRec.
+    if (rs <= 0 || rs > (long)REC_BUF_SIZE) { replyErr(id, EDB_ERROR); return; }
     active_head = tc->head_ptr;
     EDB_Status st = db.create(tc->head_ptr, (unsigned long)ts, (unsigned int)rs);
+    if (st == EDB_OK) { tc->rec_size = (unsigned int)rs; dbFile.flush(); }
     replyErr(id, st);
     return;
   }
 
   if (strcmp(cmd, "count") == 0) {
-    db.open(tc->head_ptr);
+    if (db.open(tc->head_ptr) != EDB_OK) { replyErr(id, EDB_ERROR); return; }
     Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"count\":%lu}}\n", id, db.count());
     return;
   }
 
   if (strcmp(cmd, "limit") == 0) {
-    db.open(tc->head_ptr);
+    if (db.open(tc->head_ptr) != EDB_OK) { replyErr(id, EDB_ERROR); return; }
     Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"limit\":%lu}}\n", id, db.limit());
     return;
   }
 
   if (strcmp(cmd, "clear") == 0) {
-    db.open(tc->head_ptr);
-    replyErr(id, db.clear());
+    if (db.open(tc->head_ptr) != EDB_OK) { replyErr(id, EDB_ERROR); return; }
+    EDB_Status st = db.clear();
+    if (st == EDB_OK) dbFile.flush();
+    replyErr(id, st);
     return;
   }
 
-  byte rec_buf[128];
+  byte rec_buf[REC_BUF_SIZE];
   char payload_b64[256];
   char extra[320];
 
+  // The on-disk record size is authoritative; refuse anything that does not fit rec_buf.
+  if (db.open(tc->head_ptr) != EDB_OK) { replyErr(id, EDB_ERROR); return; }
+  unsigned int rs = db.recSize();
+  if (rs == 0 || rs > sizeof(rec_buf)) { replyErr(id, EDB_ERROR); return; }
+  tc->rec_size = rs;
+
   if (strcmp(cmd, "readRec") == 0) {
     long recno = jsonLong(json, "recno");
-    unsigned int rs = tc->rec_size;
-    db.open(tc->head_ptr);
+    if (recno < 1) { replyErr(id, EDB_OUT_OF_RANGE); return; }
     EDB_Status st = db.readRec((unsigned long)recno, rec_buf);
     if (st != EDB_OK) { replyErr(id, st); return; }
-    char b64[200];
+    char b64[4 * ((REC_BUF_SIZE + 2) / 3) + 1];
     b64encode(rec_buf, rs, b64, sizeof(b64));
     snprintf(extra, sizeof(extra), "\"recno\":%ld,\"payload_b64\":\"%s\",\"enc_version\":0", recno, b64);
     replyOk(id, extra);
@@ -249,29 +274,31 @@ static void handleCommand(const char *json) {
       return;
     }
     size_t n = b64decode(payload_b64, rec_buf, sizeof(rec_buf));
-    if (n == 0 || n > tc->rec_size) {
+    if (n == 0 || n > rs) {
       Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id);
       return;
     }
-    while (n < tc->rec_size) rec_buf[n++] = 0;
-    db.open(tc->head_ptr);
+    while (n < rs) rec_buf[n++] = 0;
     EDB_Status st = EDB_ERROR;
-    if (strcmp(cmd, "appendRec") == 0) st = db.appendRec(rec_buf);
-    else if (strcmp(cmd, "updateRec") == 0) {
-      long recno = jsonLong(json, "recno");
-      st = db.updateRec((unsigned long)recno, rec_buf);
+    if (strcmp(cmd, "appendRec") == 0) {
+      st = db.appendRec(rec_buf);
     } else {
       long recno = jsonLong(json, "recno");
-      st = db.insertRec((unsigned long)recno, rec_buf);
+      if (recno < 1) { replyErr(id, EDB_OUT_OF_RANGE); return; }
+      if (strcmp(cmd, "updateRec") == 0) st = db.updateRec((unsigned long)recno, rec_buf);
+      else st = db.insertRec((unsigned long)recno, rec_buf);
     }
+    if (st == EDB_OK) dbFile.flush();
     replyErr(id, st);
     return;
   }
 
   if (strcmp(cmd, "deleteRec") == 0) {
     long recno = jsonLong(json, "recno");
-    db.open(tc->head_ptr);
-    replyErr(id, db.deleteRec((unsigned long)recno));
+    if (recno < 1) { replyErr(id, EDB_OUT_OF_RANGE); return; }
+    EDB_Status st = db.deleteRec((unsigned long)recno);
+    if (st == EDB_OK) dbFile.flush();
+    replyErr(id, st);
     return;
   }
 
