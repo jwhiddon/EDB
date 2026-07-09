@@ -4,6 +4,7 @@
 #include <fstream>
 #include <cstring>
 
+#include "Arduino.h"
 #include "EDB.h"
 #include "FakeStorage.h"
 #include "unity.h"
