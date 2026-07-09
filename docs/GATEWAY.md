@@ -155,6 +155,22 @@ For bring-up without transport crypto:
 
 Record payloads may still be ciphertext at the E2E layer when `enc_version > 0`.
 
+## File backend (host-side .db files)
+
+Instead of relaying to a serial device, the gateway can operate directly on a v3 `.db` file on the
+host — useful for inspecting or editing files migrated with `tools/edb_migrate.py`. The file format
+is byte-compatible with the firmware, so the same file works on either.
+
+1. Set `EDB_GATEWAY_FILE_ROOT` to a directory holding your `.db` files. The backend is disabled
+   until this is set, and all paths are confined to it (no traversal outside the root).
+2. Open a connection with a file path instead of a serial port:
+
+   ```
+   POST /connections   { "backend": "file", "path": "events.db" }
+   ```
+
+3. Use the same table/record endpoints as a device connection.
+
 ## Related docs
 
 - [API.md](API.md) — Arduino library API

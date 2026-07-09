@@ -31,13 +31,16 @@ async def list_devices():
 async def create_connection(body: dict):
     mock = body.get("port") == "mock" or body.get("mock", False)
     try:
-        conn = await connections.create_serial(
-            port=body.get("port", "mock"),
-            baud=int(body.get("baud", 115200)),
-            encrypt=bool(body.get("encrypt", True)),
-            mock=mock,
-        )
-    except PermissionError as e:
+        if body.get("backend") == "file" or body.get("file"):
+            conn = await connections.create_file(body.get("path") or body.get("file"))
+        else:
+            conn = await connections.create_serial(
+                port=body.get("port", "mock"),
+                baud=int(body.get("baud", 115200)),
+                encrypt=bool(body.get("encrypt", True)),
+                mock=mock,
+            )
+    except (PermissionError, ValueError) as e:
         raise HTTPException(403, str(e)) from e
     except Exception as e:
         raise HTTPException(503, str(e)) from e

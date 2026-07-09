@@ -70,7 +70,9 @@ Browser (Web Crypto) → FastAPI Gateway → Serial transport → EDB_SerialBrid
 
 - **Gateway** (`services/edb-gateway/`): REST API, connection manager, ciphertext-only relay.
 - **Manager** (`/manager`): Connect, unlock passphrase locally, CRUD on encrypted payloads.
-- **Backend abstraction**: `DeviceBackend` today; `FileBackend` (Phase 2) will use `tools/edb_migrate.py`.
+- **Backend abstraction**: `DeviceBackend` relays to a serial device; `FileBackend` operates on a
+  host-side v3 `.db` file directly (`edb_v3.py`, byte-compatible with the firmware format). Enable
+  the file backend by setting `EDB_GATEWAY_FILE_ROOT`; paths are confined to that directory.
 
 The gateway never holds decryption keys. See [GATEWAY.md](GATEWAY.md) and [ENCRYPTION.md](ENCRYPTION.md).
 

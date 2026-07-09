@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from . import config
 from .backends.device import DeviceBackend
@@ -12,9 +14,17 @@ from .transports import EncryptedTransport, MockTransport, SerialTransport, Tran
 @dataclass
 class Connection:
     id: str
-    transport: Transport
-    backend: DeviceBackend
+    transport: Transport | None
+    backend: Any
     encrypt: bool = True
+
+
+def _safe_file_path(root: str, rel: str) -> str:
+    root_abs = os.path.realpath(root)
+    full = os.path.realpath(os.path.join(root_abs, rel))
+    if os.path.commonpath([root_abs, full]) != root_abs:
+        raise PermissionError("path escapes EDB_GATEWAY_FILE_ROOT")
+    return full
 
 
 class ConnectionManager:
@@ -52,10 +62,26 @@ class ConnectionManager:
     async def create_mock(self, encrypt: bool = False) -> Connection:
         return await self.create_serial(port="mock", encrypt=encrypt, mock=True)
 
+    async def create_file(self, path: str) -> Connection:
+        from .backends.file import FileBackend
+
+        if not config.FILE_ROOT:
+            raise PermissionError("file backend disabled; set EDB_GATEWAY_FILE_ROOT")
+        if not path:
+            raise ValueError("file path required")
+        full = _safe_file_path(config.FILE_ROOT, path)
+        conn_id = str(uuid.uuid4())
+        conn = Connection(id=conn_id, transport=None, backend=FileBackend(full), encrypt=False)
+        self._connections[conn_id] = conn
+        return conn
+
     async def close(self, conn_id: str) -> None:
         conn = self._connections.pop(conn_id, None)
         if conn:
-            await conn.transport.close()
+            if conn.transport is not None:
+                await conn.transport.close()
+            elif hasattr(conn.backend, "close"):
+                await conn.backend.close()
 
 
 connections = ConnectionManager()

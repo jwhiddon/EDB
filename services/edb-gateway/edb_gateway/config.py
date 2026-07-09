@@ -53,3 +53,7 @@ def _psk() -> bytes | None:
 
 
 PSK = _psk()
+
+# Root directory for the file backend. When unset, the file backend is disabled. When set, .db
+# paths are confined to this directory (no traversal outside it).
+FILE_ROOT = os.environ.get("EDB_GATEWAY_FILE_ROOT") or None
