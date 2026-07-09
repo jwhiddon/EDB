@@ -131,14 +131,14 @@ EDB_Status EDB::readV1Header()
     EDB_Header candidate;
     memset(&candidate, 0, sizeof(candidate));
     candidate.flag = header[0];
-    memcpy(&candidate.n_recs, header + layout.n_recs_offset, sizeof(unsigned long));
-    memcpy(&candidate.rec_size, header + layout.rec_size_offset, sizeof(unsigned int));
+    memcpy(&candidate.n_recs, header + layout.n_recs_offset, sizeof(candidate.n_recs));
+    memcpy(&candidate.rec_size, header + layout.rec_size_offset, sizeof(candidate.rec_size));
     if (layout.table_size_16bit) {
       uint16_t table_size = 0;
-      memcpy(&table_size, header + layout.table_size_offset, sizeof(uint16_t));
+      memcpy(&table_size, header + layout.table_size_offset, sizeof(table_size));
       candidate.table_size = table_size;
     } else {
-      memcpy(&candidate.table_size, header + layout.table_size_offset, sizeof(unsigned long));
+      memcpy(&candidate.table_size, header + layout.table_size_offset, sizeof(candidate.table_size));
     }
 
     EDB_Header saved = EDB_head;
