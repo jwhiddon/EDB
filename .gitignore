@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+test/test_edb
+test/test_edb.exe
+test/test_edb_107
+test/test_edb_107.exe
