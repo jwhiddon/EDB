@@ -11,7 +11,7 @@ crypto lives in `EDB_Crypto` (the C reference implementation, used for tests and
 |-------|--------|
 | At-rest per-record AEAD (`EDB_Crypto`) | **Implemented** — RFC 8439 ChaCha20-Poly1305 |
 | Transport (serial wire) encryption | **Implemented** — PSK session, ChaCha20-Poly1305 line framing (see below) |
-| Browser end-to-end encryption (manager UI) | In progress |
+| Browser end-to-end encryption (manager UI) | **Implemented** — WebCrypto AES-GCM per record (see below) |
 | On-device autonomous at-rest encryption (bridge) | In progress |
 
 ## At-rest: per-record AEAD
@@ -71,6 +71,26 @@ Per-direction monotonic counters prevent replay/reordering. A wrong or missing P
 `confirm` check and pairing is refused. The session key is derived with a ChaCha20 PRF (no SHA
 needed on the MCU); it is cross-validated by a shared known-answer test in the native C suite and
 the gateway tests.
+
+## Browser end-to-end encryption (manager UI)
+
+The manager encrypts records **in the browser** with WebCrypto AES-256-GCM before they leave the
+page, so the gateway and device only ever store ciphertext (`e2e_blind`). Unlock with a passphrase;
+records then encrypt on append and decrypt on display.
+
+- **Key:** `PBKDF2-HMAC-SHA256(passphrase, salt = SHA-256("edb-e2e-v1:" + head_ptr), 250000)` →
+  AES-256-GCM. The salt is derived from the table's `head_ptr` (deterministic, not per-install
+  random), so the same passphrase decrypts a table on any machine; **passphrase strength is the
+  primary defense** — use a strong one.
+- **Record layout:** `iv(12) || ciphertext || tag(16)`, base64 in `payload_b64`, so the table's
+  `rec_size` must be `plaintext_len + 28`.
+- **AAD:** `"edb-table:" + head_ptr` binds ciphertext to its table (cross-table reuse fails). Note:
+  records are not individually bound to a slot id, so this does not authenticate reordering *within*
+  a table; the device's per-record CRC still detects byte tampering.
+
+## On-device autonomous at-rest encryption (bridge)
+
+*(In progress.)*
 
 ## Key hierarchy *(caller responsibility)*
 

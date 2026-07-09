@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>EDB Manager</h1>
-    <p class="sub">Local-first manager. Note: end-to-end and transport encryption are not yet wired — treat records as plaintext for now.</p>
+    <p class="sub">Local-first manager. Unlock with a passphrase to encrypt/decrypt records end-to-end in your browser — the gateway and device only ever see ciphertext.</p>
   </header>
   <main>
     <section id="connect-panel">
@@ -42,7 +42,7 @@
       <button id="btn-refresh">Refresh</button>
       <table id="records-table"><thead><tr><th>recno</th><th>payload</th><th></th></tr></thead><tbody></tbody></table>
       <h3>Append</h3>
-      <label>payload_b64 <input id="append-payload" size="40" placeholder="base64"></label>
+      <label>payload <input id="append-payload" size="40" placeholder="hex when unlocked, else base64"></label>
       <button id="btn-append">Append</button>
     </section>
   </main>

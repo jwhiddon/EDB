@@ -1,7 +1,73 @@
 const API = "";
 let connectionId = null;
 let activeHeadPtr = null;
-let masterKey = null;
+let passphrase = null;   // session-only; never sent to the server
+let tableKey = null;     // AES-GCM key for the currently open table
+
+// ---- End-to-end encryption (WebCrypto AES-GCM) --------------------------------------------
+// A sealed record is: iv(12) || ciphertext || tag(16), base64-encoded into payload_b64. The
+// gateway and device only ever see this ciphertext. The per-table key is PBKDF2(passphrase,
+// salt = SHA-256("edb-e2e-v1:" + head_ptr)). The salt is deterministic (not per-install random),
+// so the same passphrase decrypts a table on any machine; passphrase strength is the defense.
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+function bytesToB64(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+function b64ToBytes(b64) {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
+async function deriveTableKey(headPtr) {
+  const saltBits = await crypto.subtle.digest("SHA-256", enc.encode("edb-e2e-v1:" + headPtr));
+  const material = await crypto.subtle.importKey(
+    "raw", enc.encode(passphrase), "PBKDF2", false, ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: new Uint8Array(saltBits), iterations: 250000, hash: "SHA-256" },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+function recordAad(headPtr) {
+  return enc.encode("edb-table:" + headPtr);
+}
+
+async function sealRecord(headPtr, plaintextBytes) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: recordAad(headPtr) }, tableKey, plaintextBytes
+  ));
+  const blob = new Uint8Array(iv.length + ct.length);
+  blob.set(iv, 0);
+  blob.set(ct, iv.length);
+  return bytesToB64(blob);
+}
+
+async function openRecord(headPtr, payloadB64) {
+  const blob = b64ToBytes(payloadB64);
+  const iv = blob.slice(0, 12);
+  const ct = blob.slice(12);
+  const pt = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv, additionalData: recordAad(headPtr) }, tableKey, ct
+  );
+  return new Uint8Array(pt);
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 async function api(path, opts = {}) {
   const r = await fetch(API + path, {
@@ -40,7 +106,8 @@ document.getElementById("btn-disconnect").onclick = async () => {
   if (connectionId) {
     await api("/connections/" + connectionId, { method: "DELETE" });
     connectionId = null;
-    masterKey = null;
+    passphrase = null;
+    tableKey = null;
     document.getElementById("conn-status").textContent = "Disconnected";
     document.getElementById("btn-disconnect").disabled = true;
     document.getElementById("unlock-panel").classList.add("hidden");
@@ -52,16 +119,11 @@ document.getElementById("btn-disconnect").onclick = async () => {
 document.getElementById("btn-unlock").onclick = async () => {
   const pass = document.getElementById("passphrase").value;
   if (!pass) return;
-  const enc = new TextEncoder();
-  const material = await crypto.subtle.importKey(
-    "raw", enc.encode(pass), "PBKDF2", false, ["deriveBits"]
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt: enc.encode("edb-manager"), iterations: 100000, hash: "SHA-256" },
-    material, 256
-  );
-  masterKey = await crypto.subtle.importKey("raw", bits, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-  document.getElementById("unlock-status").textContent = "Keys derived (session only, not sent to server)";
+  passphrase = pass;
+  tableKey = activeHeadPtr !== null ? await deriveTableKey(activeHeadPtr) : null;
+  document.getElementById("unlock-status").textContent =
+    "Unlocked (records encrypt/decrypt locally; passphrase never leaves this page)";
+  if (activeHeadPtr !== null) await refreshRecords();
 };
 
 async function loadTables() {
@@ -82,6 +144,7 @@ async function openTable(headPtr) {
   activeHeadPtr = headPtr;
   document.getElementById("table-label").textContent = "@" + headPtr;
   document.getElementById("records-panel").classList.remove("hidden");
+  if (passphrase !== null) tableKey = await deriveTableKey(headPtr);
   await refreshRecords();
 }
 
@@ -91,11 +154,22 @@ async function refreshRecords() {
   );
   const tbody = document.querySelector("#records-table tbody");
   tbody.innerHTML = "";
-  (res.data?.records || []).forEach((rec) => {
+  for (const rec of res.data?.records || []) {
+    let cell;
+    if (tableKey && rec.payload_b64) {
+      try {
+        const pt = await openRecord(activeHeadPtr, rec.payload_b64);
+        cell = `<code>${bytesToHex(pt)}</code> <span class="muted">(decrypted)</span>`;
+      } catch (e) {
+        cell = `<code>${rec.payload_b64}</code> <span class="muted">(decrypt failed)</span>`;
+      }
+    } else {
+      cell = `<code>${rec.payload_b64 || ""}</code>`;
+    }
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${rec.recno}</td><td><code>${rec.payload_b64 || ""}</code></td><td></td>`;
+    tr.innerHTML = `<td>${rec.recno}</td><td>${cell}</td><td></td>`;
     tbody.appendChild(tr);
-  });
+  }
 }
 
 document.getElementById("btn-refresh").onclick = refreshRecords;
@@ -112,11 +186,26 @@ document.getElementById("btn-create").onclick = async () => {
   await loadTables();
 };
 
+function hexToBytes(hex) {
+  const clean = hex.replace(/\s+/g, "");
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
+  return out;
+}
+
 document.getElementById("btn-append").onclick = async () => {
-  const payload_b64 = document.getElementById("append-payload").value;
+  const raw = document.getElementById("append-payload").value.trim();
+  let payload_b64;
+  if (tableKey) {
+    // Unlocked: input is hex plaintext, encrypted locally before it leaves the browser.
+    payload_b64 = await sealRecord(activeHeadPtr, hexToBytes(raw));
+  } else {
+    payload_b64 = raw; // plaintext mode: input is raw base64
+  }
   await api("/connections/" + connectionId + "/tables/" + activeHeadPtr + "/records", {
     method: "POST",
     body: JSON.stringify({ payload_b64 }),
   });
+  document.getElementById("append-payload").value = "";
   await refreshRecords();
 };
