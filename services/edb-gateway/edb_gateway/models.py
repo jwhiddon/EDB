@@ -32,14 +32,6 @@ MAX_REC_SIZE = 65535
 MAX_PAYLOAD_B64 = 4 * ((MAX_REC_SIZE + 2) // 3) + 8
 
 
-class SerialConnectionRequest(BaseModel):
-    transport: str = "serial"
-    port: str
-    baud: int = 115200
-    encrypt: bool = True
-    pairing_token: str | None = None
-
-
 class TableCreateRequest(BaseModel):
     head_ptr: int = Field(ge=0)
     table_size: int = Field(gt=0, le=MAX_TABLE_SIZE)

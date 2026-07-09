@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any
 
-from ..models import EdbStatus, ProtocolMessage, ProtocolResponse
+from ..models import ProtocolResponse
 from ..transports import Transport
 
 
