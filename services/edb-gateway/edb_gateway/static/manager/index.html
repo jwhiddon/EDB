@@ -9,14 +9,14 @@
 <body>
   <header>
     <h1>EDB Manager</h1>
-    <p class="sub">End-to-end encryption — passphrase stays in your browser</p>
+    <p class="sub">Local-first manager. Note: end-to-end and transport encryption are not yet wired — treat records as plaintext for now.</p>
   </header>
   <main>
     <section id="connect-panel">
       <h2>Connect</h2>
       <label>Port <input id="port" value="mock" placeholder="COM3 or mock"></label>
       <label>Baud <input id="baud" type="number" value="115200"></label>
-      <label><input id="encrypt" type="checkbox" checked> Transport encryption</label>
+      <label><input id="encrypt" type="checkbox" checked> Pair session (transport encryption not yet wired)</label>
       <label><input id="mock" type="checkbox" checked> Mock device (no hardware)</label>
       <button id="btn-connect">Connect</button>
       <button id="btn-disconnect" disabled>Disconnect</button>
