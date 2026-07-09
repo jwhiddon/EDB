@@ -20,6 +20,13 @@
 #define EDB_BRIDGE_CRYPTO 0
 #endif
 
+#if EDB_BRIDGE_ENABLE_AT_REST_CRYPTO && defined(EDB_ENABLE_CRYPTO)
+#define EDB_BRIDGE_AT_REST 1
+#include <EDB_Crypto.h>
+#else
+#define EDB_BRIDGE_AT_REST 0
+#endif
+
 static const char DB_PATH[] = "/edb_bridge.db";
 File dbFile;
 
@@ -51,6 +58,20 @@ static int64_t rx_counter = -1;   // last accepted host -> device counter
 
 static char line_buf[EDB_BRIDGE_MAX_LINE];
 static size_t line_len = 0;
+
+#if EDB_BRIDGE_CRYPTO || EDB_BRIDGE_AT_REST
+static void bridgeFillRandom(uint8_t *p, size_t n) {
+  for (size_t i = 0; i < n; i += 4) {
+#if defined(ESP32)
+    uint32_t r = esp_random();
+#else
+    uint32_t r = ((uint32_t)random(65536) << 16) ^ (uint32_t)micros();
+#endif
+    size_t take = (n - i) >= 4 ? 4 : (n - i);
+    memcpy(p + i, &r, take);
+  }
+}
+#endif
 
 void writer(unsigned long address, const byte *data, unsigned int recsize) {
   dbFile.seek(address, SeekSet);
@@ -238,15 +259,7 @@ static void handleCommand(const char *raw) {
       return;
     }
     uint8_t dev_nonce[EDB_CRYPTO_NONCE_SIZE];
-    for (unsigned i = 0; i < EDB_CRYPTO_NONCE_SIZE; i += 4) {
-#if defined(ESP32)
-      uint32_t r = esp_random();
-#else
-      uint32_t r = ((uint32_t)random(65536) << 16) ^ (uint32_t)micros();
-#endif
-      unsigned take = (EDB_CRYPTO_NONCE_SIZE - i) >= 4 ? 4 : (EDB_CRYPTO_NONCE_SIZE - i);
-      memcpy(dev_nonce + i, &r, take);
-    }
+    bridgeFillRandom(dev_nonce, sizeof(dev_nonce));
     edb_crypto_session_key(EDB_BRIDGE_PSK, host_nonce, dev_nonce, session_key);
     uint8_t confirm[EDB_CRYPTO_TAG_SIZE];
     edb_crypto_session_confirm(session_key, confirm);
@@ -353,9 +366,23 @@ static void handleCommand(const char *raw) {
     if (recno < 1) { replyErr(id, EDB_OUT_OF_RANGE); return; }
     EDB_Status st = db.readRec((unsigned long)recno, rec_buf);
     if (st != EDB_OK) { replyErr(id, st); return; }
+    const byte *payload_ptr = rec_buf;
+    unsigned int payload_len = rs;
+#if EDB_BRIDGE_AT_REST
+    static byte plain_buf[REC_BUF_SIZE];
+    size_t plain_len = 0;
+    if (edb_crypto_open_record(EDB_BRIDGE_AT_REST_KEY, (uint32_t)tc->head_ptr, 0,
+                               rec_buf, rs, plain_buf, &plain_len) != 0) {
+      replyErr(id, EDB_CORRUPT);
+      return;
+    }
+    payload_ptr = plain_buf;
+    payload_len = (unsigned int)plain_len;
+#endif
     char b64[4 * ((REC_BUF_SIZE + 2) / 3) + 1];
-    b64encode(rec_buf, rs, b64, sizeof(b64));
-    snprintf(extra, sizeof(extra), "\"recno\":%ld,\"payload_b64\":\"%s\",\"enc_version\":0", recno, b64);
+    b64encode(payload_ptr, payload_len, b64, sizeof(b64));
+    snprintf(extra, sizeof(extra), "\"recno\":%ld,\"payload_b64\":\"%s\",\"enc_version\":%d",
+             recno, b64, EDB_BRIDGE_AT_REST);
     replyOk(id, extra);
     return;
   }
@@ -366,19 +393,38 @@ static void handleCommand(const char *raw) {
       return;
     }
     size_t n = b64decode(payload_b64, rec_buf, sizeof(rec_buf));
+    byte *write_ptr = rec_buf;
+#if EDB_BRIDGE_AT_REST
+    // The client payload is plaintext; the device seals it (fresh random nonce) before storage.
+    if (rs <= EDB_CRYPTO_RECORD_OVERHEAD) { replyErr(id, EDB_ERROR); return; }
+    unsigned int plain_max = rs - EDB_CRYPTO_RECORD_OVERHEAD;
+    if (n == 0 || n > plain_max) {
+      replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
+      return;
+    }
+    while (n < plain_max) rec_buf[n++] = 0;
+    static byte sealed_buf[REC_BUF_SIZE];
+    uint8_t at_rest_nonce[EDB_CRYPTO_NONCE_SIZE];
+    bridgeFillRandom(at_rest_nonce, sizeof(at_rest_nonce));
+    size_t sealed_len = 0;
+    edb_crypto_seal_record(EDB_BRIDGE_AT_REST_KEY, (uint32_t)tc->head_ptr, 0,
+                           at_rest_nonce, rec_buf, plain_max, sealed_buf, &sealed_len);
+    write_ptr = sealed_buf;
+#else
     if (n == 0 || n > rs) {
       replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
       return;
     }
     while (n < rs) rec_buf[n++] = 0;
+#endif
     EDB_Status st = EDB_ERROR;
     if (strcmp(cmd, "appendRec") == 0) {
-      st = db.appendRec(rec_buf);
+      st = db.appendRec(write_ptr);
     } else {
       long recno = jsonLong(json, "recno");
       if (recno < 1) { replyErr(id, EDB_OUT_OF_RANGE); return; }
-      if (strcmp(cmd, "updateRec") == 0) st = db.updateRec((unsigned long)recno, rec_buf);
-      else st = db.insertRec((unsigned long)recno, rec_buf);
+      if (strcmp(cmd, "updateRec") == 0) st = db.updateRec((unsigned long)recno, write_ptr);
+      else st = db.insertRec((unsigned long)recno, write_ptr);
     }
     if (st == EDB_OK) dbFile.flush();
     replyErr(id, st);

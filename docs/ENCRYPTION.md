@@ -12,7 +12,7 @@ crypto lives in `EDB_Crypto` (the C reference implementation, used for tests and
 | At-rest per-record AEAD (`EDB_Crypto`) | **Implemented** — RFC 8439 ChaCha20-Poly1305 |
 | Transport (serial wire) encryption | **Implemented** — PSK session, ChaCha20-Poly1305 line framing (see below) |
 | Browser end-to-end encryption (manager UI) | **Implemented** — WebCrypto AES-GCM per record (see below) |
-| On-device autonomous at-rest encryption (bridge) | In progress |
+| On-device autonomous at-rest encryption (bridge) | **Implemented** — opt-in; device seals/opens records with a provisioned key (see below) |
 
 ## At-rest: per-record AEAD
 
@@ -90,7 +90,18 @@ records then encrypt on append and decrypt on display.
 
 ## On-device autonomous at-rest encryption (bridge)
 
-*(In progress.)*
+Opt-in via `EDB_BRIDGE_ENABLE_AT_REST_CRYPTO` (plus the `-DEDB_ENABLE_CRYPTO` build flag). When
+enabled, the Serial Bridge **seals records on write and opens them on read** with a device key
+(`EDB_BRIDGE_AT_REST_KEY` in `config.h` — provision it from ESP32 NVS in production, not a
+compile-time constant). Plaintext never reaches storage, and the host sends/receives plaintext
+payloads (the device does the crypto).
+
+- Uses `edb_crypto_seal_record` / `edb_crypto_open_record`: `nonce(12) || ciphertext || tag(16)`,
+  so tables must be created with `rec_size = plaintext_len + 28`.
+- A **fresh random nonce** is generated per write (`esp_random` on ESP32), avoiding the nonce-reuse
+  risk a reboot-resettable counter would have.
+- AAD binds records to the table (`table_id = head_ptr`). This mode is mutually exclusive with
+  `e2e_blind`: choose device-side crypto *or* browser E2E for a given table, not both.
 
 ## Key hierarchy *(caller responsibility)*
 

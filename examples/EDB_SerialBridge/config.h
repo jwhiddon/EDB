@@ -35,4 +35,20 @@ static const uint8_t EDB_BRIDGE_PSK[32] = {
 };
 #endif
 
+// Autonomous at-rest encryption: when enabled, the device seals records on write and opens them on
+// read with EDB_BRIDGE_AT_REST_KEY, so plaintext never touches storage. Tables must be created with
+// rec_size = plaintext_size + 28. Opt-in and requires the -DEDB_ENABLE_CRYPTO build flag.
+#ifndef EDB_BRIDGE_ENABLE_AT_REST_CRYPTO
+#define EDB_BRIDGE_ENABLE_AT_REST_CRYPTO 0
+#endif
+
+#if EDB_BRIDGE_ENABLE_AT_REST_CRYPTO && defined(EDB_ENABLE_CRYPTO)
+// CHANGE THIS: 32-byte device key. In production, load it from secure storage (ESP32 NVS), not a
+// compile-time constant.
+static const uint8_t EDB_BRIDGE_AT_REST_KEY[32] = {
+  0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+  0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf
+};
+#endif
+
 #endif
