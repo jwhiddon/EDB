@@ -102,7 +102,8 @@ void recordLimit()
 void deleteAll()
 {
   Serial.print("Truncating table...");
-  db.clear();
+  EDB_Status result = db.clear();
+  if (result != EDB_OK) printError(result);
   Serial.println("DONE");
 }
 
@@ -150,6 +151,9 @@ void printError(EDB_Status err)
       break;
     case EDB_TABLE_FULL:
       Serial.println("Table full");
+      break;
+    case EDB_ERROR:
+      Serial.println("Database error");
       break;
     case EDB_OK:
       Serial.println("OK");

@@ -51,11 +51,17 @@ void setup()
   Serial.println("Extended Database Library + Arduino Internal EEPROM Demo");
   Serial.println();
 
+#if defined(ESP8266) || defined(ESP32)
+  EEPROM.begin(TABLE_SIZE);
+#endif
+
   randomSeed(analogRead(0));
-  
-  Serial.print("Creating table...");
-  // create table at with starting address 0
-  db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
+
+  Serial.print("Opening table... ");
+  if (db.openOrCreate(0, TABLE_SIZE, (unsigned int)sizeof(logEvent)) != EDB_OK) {
+    Serial.println("ERROR");
+    return;
+  }
   Serial.println("DONE");
 
   recordLimit();
@@ -107,7 +113,8 @@ void deleteOneRecord(int recno)
 void deleteAll()
 {
   Serial.print("Truncating table...");
-  db.clear();
+  EDB_Status result = db.clear();
+  if (result != EDB_OK) printError(result);
   Serial.println("DONE");
 }
 
@@ -192,6 +199,9 @@ void printError(EDB_Status err)
       break;
     case EDB_TABLE_FULL:
       Serial.println("Table full");
+      break;
+    case EDB_ERROR:
+      Serial.println("Database error");
       break;
     case EDB_OK:
     default:
