@@ -11,6 +11,8 @@
 #define EDB_PROM
 #endif
 
+#include <stdint.h>
+
 #define EDB_FLAG 0xDB
 #define EDB_VERSION 2
 #define EDB_HEADER_V2_SIZE 12
@@ -25,12 +27,12 @@ struct EDB_PACKED EDB_Header
 {
   byte flag;
   byte version;
-  unsigned long n_recs;
-  unsigned int rec_size;
-  unsigned long table_size;
+  uint32_t n_recs;
+  uint16_t rec_size;
+  uint32_t table_size;
 };
 
-#if defined(__cplusplus) && __cplusplus >= 201103L && !defined(EDB_TEST)
+#if defined(__cplusplus) && __cplusplus >= 201103L
 static_assert(sizeof(EDB_Header) == EDB_HEADER_V2_SIZE, "EDB_Header must be 12 bytes");
 #endif
 

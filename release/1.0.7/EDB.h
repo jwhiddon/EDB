@@ -8,6 +8,23 @@
 #define EDB_PROM
 #define EDB_FLAG 0xDB
 
+#include <stdint.h>
+
+#if defined(EDB_TEST)
+#if defined(__GNUC__)
+#define EDB_PACKED __attribute__((packed))
+#else
+#define EDB_PACKED
+#endif
+
+struct EDB_PACKED EDB_Header
+{
+  byte flag;
+  uint32_t n_recs;
+  uint16_t rec_size;
+  uint32_t table_size;
+};
+#else
 struct EDB_Header
 {
   byte flag;
@@ -15,6 +32,7 @@ struct EDB_Header
   unsigned int rec_size;
   unsigned long table_size;
 };
+#endif
 
 enum EDB_Status {
   EDB_OK,
