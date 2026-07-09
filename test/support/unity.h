@@ -5,8 +5,8 @@
 #include <string.h>
 #include <stdint.h>
 
-static int unity_tests = 0;
-static int unity_failures = 0;
+extern int unity_tests;
+extern int unity_failures;
 
 #define TEST_ASSERT_EQUAL_INT(expected, actual) \
     do { \

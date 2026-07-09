@@ -242,7 +242,7 @@ unsigned long EDB::count()
   return EDB_head.n_recs;
 }
 
-unsigned long EDB::limit()
+unsigned long EDB::limit() const
 {
   if (EDB_head.rec_size == 0) return 0;
   if (EDB_head.table_size < sizeof(EDB_Header)) return 0;

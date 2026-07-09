@@ -2,7 +2,7 @@ CXX ?= g++
 CXXFLAGS ?= -std=c++11 -Wall -Wextra -Isupport
 LDFLAGS ?=
 
-TEST_SRCS = test_main.cpp test_edb.cpp test_edb_integrity.cpp test_api_compat.cpp support/unity.c
+TEST_SRCS = test_main.cpp test_dbs.cpp test_edb.cpp test_edb_integrity.cpp test_api_compat.cpp support/unity.c
 TARGET = test_edb
 TARGET_107 = test_edb_107
 

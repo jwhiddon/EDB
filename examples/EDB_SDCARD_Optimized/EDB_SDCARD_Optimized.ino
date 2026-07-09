@@ -56,14 +56,22 @@ logEvent;
 // Also blinks the led while writing/reading
 inline void writer (unsigned long address, const byte* data, unsigned int recsize) {
     digitalWrite(13, HIGH);
+#if defined(ESP32)
     dbFile.seek(address, SeekSet);
+#else
+    dbFile.seek(address);
+#endif
     dbFile.write(data,recsize);
     digitalWrite(13, LOW);
 }
 
 inline void reader (unsigned long address, byte* data, unsigned int recsize) {
     digitalWrite(13, HIGH);
+#if defined(ESP32)
     dbFile.seek(address, SeekSet);
+#else
+    dbFile.seek(address);
+#endif
     dbFile.read(data,recsize);
     digitalWrite(13, LOW);
 }

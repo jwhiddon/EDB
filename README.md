@@ -10,6 +10,44 @@ You may use this library in conjunction with the standard Arduino EEPROM library
 
 This is a re-implementation of the [Arduino Database Library](http://playground.arduino.cc/Code/DatabaseLibrary) originally written by Madhusudana das.
 
+## Thanks
+
+Community reports and pull requests that shaped the 1.0.7 and 2.0.0 releases:
+
+### Bug fixes and patches
+
+| Contributor | Contribution |
+|-------------|--------------|
+| [@arkhipenko](https://github.com/arkhipenko) | [PR #43](https://github.com/jwhiddon/EDB/pull/43) — `limit()` division-by-zero guard and header validation on `open()` |
+| [@M-4A](https://github.com/M-4A) | [#17](https://github.com/jwhiddon/EDB/issues/17) — `EDB_table_ptr` missing in `open()` |
+| [@carloboy16](https://github.com/carloboy16) | [#29](https://github.com/jwhiddon/EDB/issues/29) — data corruption on `updateRec` |
+| [@bitbronze](https://github.com/bitbronze) | [#39](https://github.com/jwhiddon/EDB/issues/39) — SD `FILE_WRITE` / `O_APPEND` breaks `seek()` |
+| [@DavisDevasia](https://github.com/DavisDevasia) | [#20](https://github.com/jwhiddon/EDB/pull/20) — SD subfolder creation failures |
+| [@ianwillianb](https://github.com/ianwillianb) | Comments on [#33](https://github.com/jwhiddon/EDB/issues/33) / [#36](https://github.com/jwhiddon/EDB/issues/36) — `r+` vs `FILE_APPEND` on SD |
+| [@giapoldo](https://github.com/giapoldo) | [#33](https://github.com/jwhiddon/EDB/issues/33) — SDCARD_Optimized read returning wrong records |
+| [@uvedhe](https://github.com/uvedhe) | [#35](https://github.com/jwhiddon/EDB/issues/35) — `db.open()` failures on SD |
+| [@sheimend](https://github.com/sheimend) | [#36](https://github.com/jwhiddon/EDB/issues/36) — examples returning zeros on ESP32 |
+| [@ktorimaru](https://github.com/ktorimaru) | [#16](https://github.com/jwhiddon/EDB/issues/16) — ESP8266 requires `EEPROM.begin()` |
+| [@Bob2345de](https://github.com/Bob2345de) | [#32](https://github.com/jwhiddon/EDB/issues/32) — `char*` string constant warnings |
+
+### Documentation and usage questions
+
+| Contributor | Contribution |
+|-------------|--------------|
+| [@teimouri](https://github.com/teimouri) | [#38](https://github.com/jwhiddon/EDB/issues/38) — multiple tables / `head_ptr` layout |
+| [@alceuscardoso](https://github.com/alceuscardoso) | [#34](https://github.com/jwhiddon/EDB/issues/34) — multi-table `count()` confusion |
+| [@nicobrix3](https://github.com/nicobrix3) | [#31](https://github.com/jwhiddon/EDB/issues/31) — multiple tables with `create()` |
+| [@enriquecml](https://github.com/enriquecml) | [#26](https://github.com/jwhiddon/EDB/issues/26) — multiple database instances |
+| [@GPFisher](https://github.com/GPFisher) | [#15](https://github.com/jwhiddon/EDB/issues/15) — strings in record structs |
+| [@SerhioRed](https://github.com/SerhioRed) | [#22](https://github.com/jwhiddon/EDB/issues/22) — partial struct updates |
+| [@darkpipo6](https://github.com/darkpipo6) | [#23](https://github.com/jwhiddon/EDB/issues/23) — `char` arrays in structs |
+| [@wolkstein](https://github.com/wolkstein) | [#24](https://github.com/jwhiddon/EDB/issues/24) — changing record schema |
+| [@ThePatrickMartin](https://github.com/ThePatrickMartin) | [#25](https://github.com/jwhiddon/EDB/issues/25) — nested struct support |
+| [@arnolde](https://github.com/arnolde) | [#40](https://github.com/jwhiddon/EDB/issues/40) — SPIFFS insert performance |
+| [@copercini](https://github.com/copercini) | [#18](https://github.com/jwhiddon/EDB/issues/18) — WDT resets in SPIFFS example |
+
+Also thanks to [@DedeHai](https://github.com/DedeHai) for [PR #28](https://github.com/jwhiddon/EDB/pull/28) (buffer read/write handlers, 1.0.6) and community commenters who helped others in threads we closed with [docs/FAQ.md](docs/FAQ.md).
+
 ## Install
 
 * Unzip the download into your Arduino libraries directory

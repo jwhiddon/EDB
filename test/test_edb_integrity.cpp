@@ -1,11 +1,9 @@
 #include "TestHelpers.h"
+#include "test_dbs.h"
 #include "unity.h"
 
 #define TABLE_SIZE 128
 #define REC_SIZE 4
-
-static EDB byteDb(&FakeStorage::writeByte, &FakeStorage::readByte);
-static EDB bufferDb(&FakeStorage::writeBuffer, &FakeStorage::readBuffer);
 
 static void runShiftDeleteTests(EDB& db) {
     resetStorage();

@@ -4,6 +4,7 @@
 #include "Arduino.h"
 #include "EDB.h"
 #include "FakeStorage.h"
+#include "test_dbs.h"
 #include "unity.h"
 
 #define TABLE_SIZE 128
@@ -12,9 +13,6 @@
 struct TestRecord {
     int32_t value;
 };
-
-static EDB byteDb(&FakeStorage::writeByte, &FakeStorage::readByte);
-static EDB bufferDb(&FakeStorage::writeBuffer, &FakeStorage::readBuffer);
 
 static void resetStorage() {
     FakeStorage::instance().reset();

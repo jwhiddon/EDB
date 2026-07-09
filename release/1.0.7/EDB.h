@@ -6,7 +6,7 @@
 
 #ifndef EDB_PROM
 #define EDB_PROM
-#define EDB_FLAG B11011011
+#define EDB_FLAG 0xDB
 
 struct EDB_Header
 {
@@ -42,7 +42,7 @@ class EDB {
     EDB_Status insertRec(unsigned long, const EDB_Rec);
     EDB_Status updateRec(unsigned long, const EDB_Rec);
     EDB_Status appendRec(EDB_Rec rec);
-    unsigned long limit();
+    unsigned long limit() const;
     unsigned long count();
     void clear();
 #ifdef EDB_TEST

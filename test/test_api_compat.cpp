@@ -1,15 +1,14 @@
 #include "TestHelpers.h"
+#include "test_dbs.h"
 #include "unity.h"
-
-static EDB db(&FakeStorage::writeByte, &FakeStorage::readByte);
 
 void test_update_rec_zero_out_of_range() {
     resetStorage();
-    TEST_ASSERT_EQUAL_INT(EDB_OK, db.create(0, 128, 4));
-    appendSequence(db, 1, 2);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, compatDb.create(0, 128, 4));
+    appendSequence(compatDb, 1, 2);
     auto before = snapshotRecordRegion(0, v2HeaderSize(), 2, 4);
     TestRecord record = makeRecord(99);
-    TEST_ASSERT_EQUAL_INT(EDB_OUT_OF_RANGE, db.updateRec(0, EDB_REC record));
+    TEST_ASSERT_EQUAL_INT(EDB_OUT_OF_RANGE, compatDb.updateRec(0, EDB_REC record));
     assertRecordRegionEquals(before, snapshotRecordRegion(0, v2HeaderSize(), 2, 4));
 }
 
@@ -17,12 +16,12 @@ void test_open_corrupt_flag() {
     resetStorage();
     FakeStorage::instance().resize(32);
     FakeStorage::instance().data[0] = 0x00;
-    TEST_ASSERT_EQUAL_INT(EDB_ERROR, db.open(0));
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, compatDb.open(0));
 }
 
 void test_create_zero_recsize() {
     resetStorage();
-    TEST_ASSERT_EQUAL_INT(EDB_ERROR, db.create(0, 128, 0));
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, compatDb.create(0, 128, 0));
 }
 
 void test_open_master_avr_fixture() {
@@ -34,8 +33,8 @@ void test_open_master_avr_fixture() {
     }
     resetStorage();
     FakeStorage::instance().load(fixture);
-    TEST_ASSERT_EQUAL_INT(EDB_OK, db.open(0));
-    assertAllRecords(db, {1, 2, 3, 4, 5, 6, 7, 8});
+    TEST_ASSERT_EQUAL_INT(EDB_OK, compatDb.open(0));
+    assertAllRecords(compatDb, {1, 2, 3, 4, 5, 6, 7, 8});
 #else
     printf("SKIP avr fixture open on 1.0.7 host build (MCU-specific struct layout)\n");
 #endif
@@ -50,8 +49,8 @@ void test_open_master_esp32_fixture() {
     }
     resetStorage();
     FakeStorage::instance().load(fixture);
-    TEST_ASSERT_EQUAL_INT(EDB_OK, db.open(0));
-    assertAllRecords(db, {10, 20, 30, 40});
+    TEST_ASSERT_EQUAL_INT(EDB_OK, compatDb.open(0));
+    assertAllRecords(compatDb, {10, 20, 30, 40});
 #endif
 }
 
