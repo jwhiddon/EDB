@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import uuid
 from dataclasses import dataclass
 
@@ -50,7 +51,7 @@ class ConnectionManager:
         return await self.create_serial(
             port="mock",
             encrypt=encrypt,
-            pairing_token="test-token-12345678",
+            pairing_token=secrets.token_hex(16),
             mock=True,
         )
 

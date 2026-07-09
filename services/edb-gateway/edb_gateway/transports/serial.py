@@ -64,5 +64,6 @@ class SerialTransport(Transport):
             if not resp_line:
                 raise TimeoutError("serial timeout")
             text = resp_line.decode(errors="replace").strip()
-            logger.debug("serial rx %s", sanitize_for_log(json.loads(text)))
-            return json.loads(text)
+            parsed = json.loads(text)
+            logger.debug("serial rx %s", sanitize_for_log(parsed))
+            return parsed

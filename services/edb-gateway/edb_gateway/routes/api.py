@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from ..auth import require_api_key
 from ..connections import connections
 from ..models import EdbStatus, PairRequest, RecordPayload, STATUS_HTTP, TableCreateRequest
 from ..transports.serial import list_serial_ports
 
-router = APIRouter()
+# Per-record overhead added by the at-rest crypto envelope (nonce + tag).
+CRYPTO_RECORD_OVERHEAD = 28
+
+router = APIRouter(dependencies=[Depends(require_api_key)])
 
 
 def _status_response(resp_status: EdbStatus, data: dict | None = None) -> JSONResponse:
@@ -85,7 +89,7 @@ async def create_table(conn_id: str, body: TableCreateRequest):
         raise HTTPException(404, "connection not found")
     rec_size = body.rec_size
     if body.enc_version > 0 and body.plaintext_rec_size:
-        rec_size = body.plaintext_rec_size + 16
+        rec_size = body.plaintext_rec_size + CRYPTO_RECORD_OVERHEAD
     resp = await conn.backend.create_table(body.head_ptr, body.table_size, rec_size)
     return _status_response(resp.status, resp.data)
 
@@ -143,11 +147,23 @@ async def list_records(
     await conn.backend.open_table(head_ptr)
     count_r = await conn.backend.count(head_ptr)
     total = int(count_r.data.get("count", 0))
-    records = []
-    for recno in range(offset + 1, min(total, offset + limit) + 1):
+
+    # v3 record ids are stable and may be sparse (deleted slots are tombstones). Scan by
+    # recno, skip tombstones/corrupt slots, and stop at the end of the slot range. The scan
+    # is bounded so a misbehaving device cannot make this loop unbounded.
+    records: list[dict] = []
+    recno = offset + 1
+    max_scan = offset + limit * 4 + 64
+    scanned = 0
+    while len(records) < limit and scanned < max_scan:
         r = await conn.backend.read_rec(head_ptr, recno)
+        scanned += 1
+        recno += 1
         if r.status == EdbStatus.OK:
-            records.append({"recno": recno, **r.data})
+            records.append({"recno": recno - 1, **r.data})
+        elif r.status == EdbStatus.OUT_OF_RANGE:
+            break
+        # EDB_DELETED / EDB_CORRUPT: skip and continue
     return _status_response(EdbStatus.OK, {"records": records, "total": total})
 
 

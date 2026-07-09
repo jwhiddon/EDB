@@ -11,6 +11,9 @@ class EdbStatus(str, Enum):
     ERROR = "EDB_ERROR"
     OUT_OF_RANGE = "EDB_OUT_OF_RANGE"
     TABLE_FULL = "EDB_TABLE_FULL"
+    DELETED = "EDB_DELETED"
+    CORRUPT = "EDB_CORRUPT"
+    NEEDS_MIGRATION = "EDB_NEEDS_MIGRATION"
 
 
 STATUS_HTTP = {
@@ -18,7 +21,15 @@ STATUS_HTTP = {
     EdbStatus.ERROR: 400,
     EdbStatus.OUT_OF_RANGE: 422,
     EdbStatus.TABLE_FULL: 409,
+    EdbStatus.DELETED: 404,
+    EdbStatus.CORRUPT: 422,
+    EdbStatus.NEEDS_MIGRATION: 409,
 }
+
+# Conservative upper bounds; the device enforces its own limits too.
+MAX_TABLE_SIZE = 16 * 1024 * 1024
+MAX_REC_SIZE = 65535
+MAX_PAYLOAD_B64 = 4 * ((MAX_REC_SIZE + 2) // 3) + 8
 
 
 class SerialConnectionRequest(BaseModel):
@@ -30,16 +41,16 @@ class SerialConnectionRequest(BaseModel):
 
 
 class TableCreateRequest(BaseModel):
-    head_ptr: int
-    table_size: int
-    rec_size: int
-    enc_version: int = 0
+    head_ptr: int = Field(ge=0)
+    table_size: int = Field(gt=0, le=MAX_TABLE_SIZE)
+    rec_size: int = Field(gt=0, le=MAX_REC_SIZE)
+    enc_version: int = Field(default=0, ge=0)
     enc_mode: str = "e2e_blind"
-    plaintext_rec_size: int | None = None
+    plaintext_rec_size: int | None = Field(default=None, gt=0, le=MAX_REC_SIZE)
 
 
 class RecordPayload(BaseModel):
-    payload_b64: str
+    payload_b64: str = Field(min_length=1, max_length=MAX_PAYLOAD_B64)
 
 
 class PairRequest(BaseModel):
