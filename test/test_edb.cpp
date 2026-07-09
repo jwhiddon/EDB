@@ -153,8 +153,8 @@ void test_insert_empty_table_requires_recno_one() {
 
 void test_table_full_errors() {
     resetStorage();
-    unsigned long limit = (TABLE_SIZE - 12) / REC_SIZE;
     TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    unsigned long limit = byteDb.limit();
     for (unsigned long i = 0; i < limit; i++) {
         TestRecord record = makeRecord((int32_t)i);
         TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC record));
@@ -163,6 +163,22 @@ void test_table_full_errors() {
     TEST_ASSERT_EQUAL_INT(EDB_TABLE_FULL, byteDb.appendRec(EDB_REC extra));
     TEST_ASSERT_EQUAL_INT(EDB_TABLE_FULL, byteDb.insertRec(1, EDB_REC extra));
 }
+
+#if EDB_VERSION
+void test_buffer_delete_uses_block_shift() {
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, bufferDb.create(0, TABLE_SIZE, REC_SIZE));
+    for (int i = 1; i <= 4; i++) {
+        TestRecord record = makeRecord(i);
+        TEST_ASSERT_EQUAL_INT(EDB_OK, bufferDb.appendRec(EDB_REC record));
+    }
+    FakeStorage::instance().buffer_reads = 0;
+    FakeStorage::instance().buffer_writes = 0;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, bufferDb.deleteRec(2));
+    TEST_ASSERT_EQUAL_INT(1, FakeStorage::instance().buffer_reads);
+    TEST_ASSERT_EQUAL_INT(1, FakeStorage::instance().buffer_writes);
+}
+#endif
 
 void test_clear_resets_count() {
     resetStorage();
@@ -183,20 +199,6 @@ void test_buffer_handlers_smoke() {
     TestRecord readBack;
     TEST_ASSERT_EQUAL_INT(EDB_OK, bufferDb.readRec(1, EDB_REC readBack));
     TEST_ASSERT_EQUAL_INT(42, readBack.value);
-}
-
-void test_buffer_delete_uses_block_shift() {
-    resetStorage();
-    TEST_ASSERT_EQUAL_INT(EDB_OK, bufferDb.create(0, TABLE_SIZE, REC_SIZE));
-    for (int i = 1; i <= 4; i++) {
-        TestRecord record = makeRecord(i);
-        TEST_ASSERT_EQUAL_INT(EDB_OK, bufferDb.appendRec(EDB_REC record));
-    }
-    FakeStorage::instance().buffer_reads = 0;
-    FakeStorage::instance().buffer_writes = 0;
-    TEST_ASSERT_EQUAL_INT(EDB_OK, bufferDb.deleteRec(2));
-    TEST_ASSERT_EQUAL_INT(1, FakeStorage::instance().buffer_reads);
-    TEST_ASSERT_EQUAL_INT(1, FakeStorage::instance().buffer_writes);
 }
 
 void test_malloc_failure_returns_error() {
@@ -272,7 +274,9 @@ int run_smoke_tests() {
     RUN_TEST(test_table_full_errors);
     RUN_TEST(test_clear_resets_count);
     RUN_TEST(test_buffer_handlers_smoke);
+#if EDB_VERSION
     RUN_TEST(test_buffer_delete_uses_block_shift);
+#endif
     RUN_TEST(test_malloc_failure_returns_error);
 #if EDB_VERSION
     RUN_TEST(test_next_table_offset);

@@ -66,6 +66,7 @@ extern int unity_failures;
     do { \
         unity_tests++; \
         printf("RUN  %s\n", #func); \
+        fflush(stdout); \
         func(); \
     } while (0)
 

@@ -138,7 +138,8 @@ void test_header_nrecs_matches_count() {
 #endif
 }
 
-static void runParityTest(void (*mutate)(EDB&)) {
+template<typename Mutator>
+static void runParityTest(Mutator mutate) {
     FakeStorage::usePrimary();
     resetStorage();
     EDB byteSide(&FakeStorage::writeByte, &FakeStorage::readByte);
