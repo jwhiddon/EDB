@@ -39,20 +39,38 @@ REQUIRED_TYPES = [
     "EDB_TABLE_FULL",
 ]
 
+# v3 (3.x) adds stable-slot iteration/repair helpers and richer status codes.
+REQUIRED_METHODS_V3 = [
+    "firstRec",
+    "nextRec",
+    "isLive",
+    "compact",
+]
+
+REQUIRED_TYPES_V3 = [
+    "EDB_DELETED",
+    "EDB_CORRUPT",
+    "EDB_NEEDS_MIGRATION",
+]
+
 
 def check_header(
     path: Path,
     expect_edb_extern: bool,
     expect_clear_status: bool,
     expect_v2_helpers: bool = False,
+    expect_v3_helpers: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     text = path.read_text(encoding="utf-8")
     methods = REQUIRED_METHODS + (REQUIRED_METHODS_V2 if expect_v2_helpers else [])
+    if expect_v3_helpers:
+        methods = methods + REQUIRED_METHODS_V3
     for method in methods:
         if method not in text:
             errors.append(f"{path}: missing symbol {method}")
-    for typedef_name in REQUIRED_TYPES:
+    types = REQUIRED_TYPES + (REQUIRED_TYPES_V3 if expect_v3_helpers else [])
+    for typedef_name in types:
         if typedef_name not in text:
             errors.append(f"{path}: missing symbol {typedef_name}")
     if expect_edb_extern and "extern EDB edb" not in text:
@@ -71,7 +89,7 @@ def check_header(
 def main() -> int:
     errors: list[str] = []
     errors.extend(check_header(ROOT / "release" / "1.0.7" / "EDB.h", True, False, False))
-    errors.extend(check_header(ROOT / "EDB.h", True, True, True))
+    errors.extend(check_header(ROOT / "EDB.h", True, True, True, expect_v3_helpers=True))
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

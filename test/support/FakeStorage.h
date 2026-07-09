@@ -77,6 +77,16 @@ public:
         instance().readBufferImpl(address, buffer, size);
     }
 
+    // Instance-level buffer access (distinct names: the static overloads above are used as
+    // EDB read/write handler function pointers, so these cannot share their signature).
+    void writeBufferInstance(unsigned long address, const uint8_t* buffer, unsigned int size) {
+        writeBufferImpl(address, buffer, size);
+    }
+
+    void readBufferInstance(unsigned long address, uint8_t* buffer, unsigned int size) {
+        readBufferImpl(address, buffer, size);
+    }
+
 private:
     static FakeStorage& primary() {
         static FakeStorage storage;

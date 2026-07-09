@@ -6,6 +6,11 @@
 int run_smoke_tests();
 int run_integrity_tests();
 int run_compat_tests();
+int run_crypto_tests();
+int run_crypto_header_tests();
+int run_crypto_integrity_tests();
+int run_crypto_blind_tests();
+int run_compile_flags_tests();
 
 int main() {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -17,6 +22,12 @@ int main() {
     failures += run_integrity_tests();
     printf("SUITE compat (failures so far: %d)\n", failures);
     failures += run_compat_tests();
+    printf("SUITE crypto (failures so far: %d)\n", failures);
+    failures += run_crypto_tests();
+    failures += run_crypto_header_tests();
+    failures += run_crypto_integrity_tests();
+    failures += run_crypto_blind_tests();
+    failures += run_compile_flags_tests();
     printf("DONE failures=%d\n", failures);
     return failures == 0 ? 0 : 1;
 }

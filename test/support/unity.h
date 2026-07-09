@@ -54,6 +54,38 @@ extern int unity_failures;
         } \
     } while (0)
 
+#define TEST_ASSERT_EQUAL(expected, actual) TEST_ASSERT_EQUAL_INT((expected), (actual))
+
+#define TEST_ASSERT_EQUAL_UINT8(expected, actual) \
+    do { \
+        unsigned _expected = (unsigned)(uint8_t)(expected); \
+        unsigned _actual = (unsigned)(uint8_t)(actual); \
+        if (_expected != _actual) { \
+            printf("FAIL %s:%d expected %u got %u\n", __FILE__, __LINE__, _expected, _actual); \
+            unity_failures++; \
+        } \
+    } while (0)
+
+#define TEST_ASSERT_EQUAL_UINT16(expected, actual) \
+    do { \
+        unsigned _expected = (unsigned)(uint16_t)(expected); \
+        unsigned _actual = (unsigned)(uint16_t)(actual); \
+        if (_expected != _actual) { \
+            printf("FAIL %s:%d expected %u got %u\n", __FILE__, __LINE__, _expected, _actual); \
+            unity_failures++; \
+        } \
+    } while (0)
+
+#define TEST_ASSERT_NOT_EQUAL(threshold, actual) \
+    do { \
+        long _threshold = (long)(threshold); \
+        long _actual = (long)(actual); \
+        if (_threshold == _actual) { \
+            printf("FAIL %s:%d expected != %ld\n", __FILE__, __LINE__, _threshold); \
+            unity_failures++; \
+        } \
+    } while (0)
+
 #define TEST_ASSERT_TRUE(condition) \
     do { \
         if (!(condition)) { \

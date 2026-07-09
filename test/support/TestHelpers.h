@@ -70,8 +70,21 @@ inline bool loadFixtureFile(const char* path, std::vector<uint8_t>& out) {
 }
 
 #ifdef EDB_VERSION
-inline unsigned int v2HeaderSize() { return EDB_HEADER_V2_SIZE; }
+inline unsigned int v2HeaderSize() { return EDB_HEADER_SPAN; }
 inline bool isV2Release() { return true; }
+
+// v3 stable-slot iteration: collect the values of all live records in slot order.
+inline void assertLiveSequence(EDB& db, const std::vector<int32_t>& expected) {
+    std::vector<int32_t> actual;
+    for (unsigned long r = db.firstRec(); r != 0; r = db.nextRec(r)) {
+        TestRecord rec;
+        TEST_ASSERT_EQUAL_INT(EDB_OK, db.readRec(r, EDB_REC rec));
+        actual.push_back(rec.value);
+    }
+    TEST_ASSERT_EQUAL_INT((int)expected.size(), (int)actual.size());
+    for (size_t i = 0; i < expected.size(); i++)
+        TEST_ASSERT_EQUAL_INT(expected[i], actual[i]);
+}
 #else
 inline unsigned int v2HeaderSize() { return (unsigned int)sizeof(EDB_Header); }
 inline bool isV2Release() { return false; }
