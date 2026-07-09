@@ -1,112 +1,89 @@
 # EDB Encryption
 
-EDB supports optional **three-layer** protection for gateway-managed databases:
+Optional record-level encryption, opt-in via `EDB_ENABLE_CRYPTO`. The **core `EDB` library is
+encryption-agnostic**: it stores encrypted records as opaque bytes and never holds a key. All
+crypto lives in `EDB_Crypto` (the C reference implementation, used for tests and the optional
+`device_autonomous` mode) and, for `e2e_blind` tables, in the browser/host that owns the key.
 
-1. **At-rest** — per-record authenticated encryption on device storage
-2. **Transport** — session encryption over serial (or TCP in Phase 3)
-3. **End-to-end** — gateway relays ciphertext only; browser decrypts with user passphrase
+## What is implemented today
 
-## Threat model
+| Layer | Status |
+|-------|--------|
+| At-rest per-record AEAD (`EDB_Crypto`) | **Implemented** — RFC 8439 ChaCha20-Poly1305 |
+| Transport (serial wire) encryption | **Not implemented** — pairing establishes a session token but the serial line is currently plaintext. Do not rely on it for confidentiality; keep the USB link physically trusted or add a secure channel. |
+| Browser end-to-end encryption (manager UI) | **Not implemented** — the manager UI stores/shows record bytes as-is; wire your own encrypt/decrypt with `EDB_Crypto`-compatible framing before relying on E2E. |
 
-| Threat | Mitigation |
-|--------|------------|
-| SD card / EEPROM stolen | At-rest record encryption |
-| USB serial sniffing | Transport session encryption |
-| Compromised gateway / logs | E2E: no decryption keys on server |
-| Lost passphrase | **No recovery** — back up wrapped keys |
-
-**Non-goals:** HSM, secure enclave, multi-user ACLs, searchable encryption.
+The sections below marked *(planned)* are design intent, not shipped behavior.
 
 ## At-rest: per-record AEAD
 
-Each record slot stores `plaintext_len + 16` bytes (Poly1305 tag). Cipher: **XChaCha20-Poly1305** (default) or AES-128-GCM on ESP32 HW paths.
+Cipher: **ChaCha20-Poly1305 (RFC 8439)**, validated against the RFC test vector and OpenSSL.
 
-**Nonce** (12 bytes): derived from `table_id` (head_ptr) and **physical byte offset** of the slot — not logical `recno`. EDB shift operations move ciphertext without re-encryption.
-
-```
-nonce = truncate_12(SHA256(table_id LE32 || offset LE32))
-```
-
-## Key hierarchy
+A sealed record stores its own fresh nonce, so re-encrypting an updated record never reuses
+keystream:
 
 ```
-passphrase  →  Argon2id (browser)  →  master_key
-master_key  →  HKDF-SHA256(salt, info=head_ptr)  →  table_key
-table_key   →  XChaCha20-Poly1305 per record slot
+sealed record = nonce(12) || ciphertext(plaintext_len) || tag(16)
+stored_rec_size = plaintext_len + 28          (EDB_CRYPTO_RECORD_OVERHEAD)
 ```
 
-- Passphrase never sent to device or gateway.
-- Master key lives in browser session memory (Web Crypto).
-- Device stores `salt` in header extension; optional wrapped table key for autonomous mode.
+- **Nonce:** a fresh 96-bit value chosen per write by the caller (random in the browser, or a
+  per-slot counter on device). It is stored with the record — never derived from the slot location.
+- **Authentication / AAD:** the record identity `table_id (LE32) || record_id (LE32)` is
+  authenticated as associated data. A ciphertext moved to a different table or slot fails
+  verification, so records cannot be silently swapped or replayed.
+- **Verification:** the tag is checked in constant time before decryption.
+
+### Reference API (`EDB_Crypto.h`)
+
+```c
+edb_crypto_aead_encrypt(key, nonce, aad, aad_len, plaintext, pt_len, ciphertext, tag);
+edb_crypto_aead_decrypt(key, nonce, aad, aad_len, ciphertext, ct_len, tag, plaintext);
+edb_crypto_seal_record(key, table_id, record_id, nonce, plaintext, pt_len, out, &out_len);
+edb_crypto_open_record(key, table_id, record_id, in, in_len, plaintext, &pt_len);
+```
+
+`seal_record`/`open_record` produce and consume the `nonce || ciphertext || tag` framing above.
+
+## Key hierarchy *(caller responsibility)*
+
+Keys are derived and held by whoever owns them (browser or device firmware), never by the core
+library or the gateway relay:
+
+```
+passphrase  →  KDF (host/browser)  →  master_key  →  per-table key  →  seal_record()
+```
+
+The gateway is a **ciphertext relay** and holds no keys.
 
 ## Encryption modes
 
 | Mode | Device keys | Use case |
 |------|-------------|----------|
-| `e2e_blind` | None | Manager CRUD; device stores opaque ciphertext |
-| `device_autonomous` | KEK in NVS wraps table key | Firmware logs without host |
+| `e2e_blind` | None | Host/browser owns the key; device stores opaque ciphertext |
+| `device_autonomous` | KEK wraps a table key (ESP32 NVS) | Firmware encrypts/decrypts without a host |
 
-## Header extension (after v2 header)
+## Table descriptor (metadata)
 
-Optional block at `head_ptr + 12` when `version == 2` and extension flag set:
-
-| Offset | Size | Field |
-|--------|------|-------|
-| 0 | 1 | `ext_magic` = `0xE1` |
-| 1 | 1 | `enc_version` (0=none, 1=chacha20_record_v1) |
-| 2 | 1 | `enc_mode` (0=blind, 1=autonomous) |
-| 3 | 1 | reserved |
-| 4 | 16 | `salt` |
-| 20 | 2 | `plaintext_rec_size` LE16 |
-| 22 | 2 | `stored_rec_size` LE16 |
-| 24 | 48 | `wrapped_table_key` (zeros in blind mode; AES-GCM wrap in autonomous) |
-
-**Fixed 72-byte extension** for all encrypted tables. Record data always begins at `head_ptr + 84`, so one on-disk layout serves both `e2e_blind` and `device_autonomous` (upgrade path: flip `enc_mode` and write wrapped key without moving records).
-
-v2 readers that do not understand extensions treat tables as standard v2 if `ext_magic != 0xE1`.
-
-## Transport encryption
-
-After `pair`:
-
-- **ESP32 (Tier 1):** session key derived from pairing token via HKDF; lines encrypted with **ChaCha20-Poly1305** framing: `nonce(12) || ciphertext || tag(16)` then base64, or raw binary length prefix.
-- **Mega (Tier 2):** AES-128-CTR + HMAC-PSK (lighter RAM).
-- **Dev:** `EDB_GATEWAY_INSECURE=1` disables transport crypto on localhost.
-
-Wire format inside encrypted envelope: same NDJSON as [GATEWAY.md](GATEWAY.md).
-
-## RAM tiers
-
-| Platform | Tier | At-rest | Transport | Autonomous |
-|----------|------|---------|-----------|------------|
-| ESP32 | 1 | Yes | Session crypto | Yes |
-| Mega | 2 | Blind only | PSK-AES | No |
-| Uno | 3 | Opaque bytes only | No bridge | No |
-
-See [GATEWAY.md](GATEWAY.md) and [examples/EDB_SerialBridge/README.md](../examples/EDB_SerialBridge/README.md).
+An optional 72-byte descriptor (`ext_magic = 0xE1`) records encryption parameters (mode, salt,
+plaintext/stored sizes, and a wrapped key for autonomous mode). It is metadata for the host/gateway;
+the core library treats records as opaque regardless. See `edb_crypto_parse_ext` /
+`edb_crypto_write_ext_blind`.
 
 ## Build flags
 
-Optional compile-time flags (see [API.md](API.md) § Build flags):
-
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `EDB_ENABLE_CRYPTO` | off | Include `EDB_Crypto.h` |
-| `EDB_CRYPTO_DEVICE_AUTONOMOUS` | off | On-device encrypt/decrypt + NVS |
-| `EDB_CRYPTO_CIPHER_CHACHA20` | on if crypto | XChaCha20-Poly1305 |
-| `EDB_CRYPTO_CIPHER_AES_GCM` | off | AES-128-GCM alternative |
-| `EDB_NO_MALLOC_SHIFT` | off | Smaller shifts, lower peak RAM |
-| `EDB_BRIDGE_ENABLE_TRANSPORT_CRYPTO` | on (ESP32) | Bridge serial session crypto |
-| `EDB_BRIDGE_MAX_LINE` | 512 | Static RX buffer size |
+| `EDB_ENABLE_CRYPTO` | off | Compile `EDB_Crypto` (ChaCha20-Poly1305) |
+| `EDB_CRYPTO_DEVICE_AUTONOMOUS` | off | Wrapped-key extension helpers for autonomous mode |
 
 ## Test vectors
 
-Shared vectors in `test/fixtures/crypto_vectors.json` — host native tests and Python gateway tests must match.
-
-Example (table_id=0, offset=12, plaintext `01020304`, key=all `0x42`):
-
-- See `crypto_vectors.json` for expected `payload_b64` after encrypt.
+`test/fixtures/crypto_vectors.json` holds an authoritative `seal_record` known-answer
+(`sealed_hex = nonce || ciphertext || tag`, AAD = `table_id || record_id`). The native C test
+reproduces it byte-for-byte; any other implementation that checks the same file is cross-validated.
 
 ## Passphrase backup
 
-If you lose the passphrase, encrypted data is **not recoverable**. Export wrapped keys from autonomous tables when rotating passphrases.
+If a passphrase/key is lost, encrypted data is **not recoverable**. Back up wrapped keys before
+rotating passphrases on autonomous tables.

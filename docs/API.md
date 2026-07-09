@@ -7,9 +7,12 @@
 | Value | Meaning |
 |-------|---------|
 | `EDB_OK` | Success |
-| `EDB_ERROR` | General failure (invalid header, I/O verification failed, malloc failure, v1 ESP32 write without migration) |
-| `EDB_OUT_OF_RANGE` | `recno` is less than 1 or greater than `count()` |
+| `EDB_ERROR` | General failure (invalid/corrupt header, I/O verification failed, invalid params) |
+| `EDB_OUT_OF_RANGE` | `recno` is less than 1 or refers to a never-used slot |
 | `EDB_TABLE_FULL` | Table cannot hold another record |
+| `EDB_DELETED` | `recno` refers to a deleted (tombstoned) slot |
+| `EDB_CORRUPT` | A record or header CRC failed verification |
+| `EDB_NEEDS_MIGRATION` | A legacy v1/v2 file — migrate offline with `tools/edb_migrate.py` |
 
 ### `EDB_Rec`
 
@@ -43,25 +46,53 @@ Opens an existing database.
 - Validates flag, sizes, and `n_recs <= limit()`.
 - Returns `EDB_ERROR` for corrupt or unrecognized headers.
 
-## `EDB_Status appendRec(const EDB_Rec rec)`
+## `EDB_Status appendRec(const EDB_Rec rec)` / `appendRec(const EDB_Rec rec, unsigned long* out_recno)`
 
-Appends a record at the end. Fastest insert path. Returns `EDB_TABLE_FULL` when full.
+Appends a record into a free slot (reused or newly grown), O(1). The optional `out_recno` receives
+the stable id assigned to the record. Returns `EDB_TABLE_FULL` when full.
 
 ## `EDB_Status readRec(unsigned long recno, EDB_Rec rec)`
 
-Reads record `recno` into caller-provided memory (`rec_size` bytes). Returns `EDB_OUT_OF_RANGE` when invalid.
+Reads record `recno` into caller-provided memory (`rec_size` bytes) and verifies its CRC. Returns
+`EDB_OUT_OF_RANGE` (never-used id), `EDB_DELETED` (tombstoned), or `EDB_CORRUPT` (CRC mismatch).
 
 ## `EDB_Status updateRec(unsigned long recno, const EDB_Rec rec)`
 
-Overwrites an existing record. Returns `EDB_OUT_OF_RANGE` or `EDB_ERROR`.
+Overwrites an existing live record, O(1) (no header write). Returns `EDB_OUT_OF_RANGE`/`EDB_DELETED`.
 
 ## `EDB_Status insertRec(unsigned long recno, const EDB_Rec rec)`
 
-Inserts before the record currently at `recno`, shifting later records up. Slow for large tables. On an empty table, only `recno == 1` is valid.
+**v3 behavior:** allocates a free slot like `appendRec`; the `recno` argument is ignored and
+positional order is **not** preserved. Prefer `appendRec`. (Kept for source compatibility.)
 
 ## `EDB_Status deleteRec(unsigned long recno)`
 
-Deletes a record and shifts later records down. Slow for large tables.
+Tombstones the record's slot, O(1). The id is not reused until a later `appendRec`, and other
+records keep their ids. Returns `EDB_OUT_OF_RANGE`/`EDB_DELETED` for invalid ids.
+
+## `unsigned long firstRec()` / `unsigned long nextRec(unsigned long recno)`
+
+Iterate **live** records in id order, skipping tombstones; return `0` when exhausted. Use these
+instead of looping `1..count()` (ids can be sparse after deletes):
+
+```cpp
+for (unsigned long r = db.firstRec(); r != 0; r = db.nextRec(r)) {
+    db.readRec(r, EDB_REC rec);
+}
+```
+
+## `bool isLive(unsigned long recno)`
+
+Returns `true` if `recno` is an allocated, non-tombstoned slot.
+
+## `EDB_Status compact()`
+
+Reconciles `count()` and rebuilds the free list from tombstones (reclaims slots leaked by a crash).
+Does not move records, so ids stay stable.
+
+## `unsigned int recSize() const`
+
+Returns the stored record size (bytes) of the open table.
 
 ## `EDB_Status clear()`
 
@@ -147,11 +178,10 @@ Optional compile-time flags (define before `#include` or via `-D` in build prope
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `EDB_ENABLE_CRYPTO` | off | Include `EDB_Crypto.h` record encryption |
-| `EDB_CRYPTO_DEVICE_AUTONOMOUS` | off | On-device encrypt/decrypt + NVS keys |
-| `EDB_CRYPTO_CIPHER_CHACHA20` | on if crypto | XChaCha20-Poly1305 (default) |
-| `EDB_CRYPTO_CIPHER_AES_GCM` | off | AES-128-GCM alternative (ESP32) |
-| `EDB_NO_MALLOC_SHIFT` | off | Byte-at-a-time shift; lower peak RAM |
+| `EDB_VERIFY_ON_READ` | `1` | Verify each record's CRC on read; `0` = write-only integrity (min read CPU) |
+| `EDB_HEADER_REDUNDANT` | `1` | Store the header twice for atomic updates; `0` = single header (discouraged) |
+| `EDB_ENABLE_CRYPTO` | off | Include `EDB_Crypto.h` (ChaCha20-Poly1305 record encryption) |
+| `EDB_CRYPTO_DEVICE_AUTONOMOUS` | off | On-device wrapped-key extension helpers |
 | `EDB_NO_GLOBAL` | off | Omit legacy `extern EDB edb` |
 | `EDB_TEST` | off | Test hooks (native tests only) |
 

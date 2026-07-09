@@ -2,6 +2,11 @@
 
 This guide describes safe upgrade paths between EDB releases. Read it before replacing library files in a project that already has live data on EEPROM, SD, or SPIFFS.
 
+> **2.0.0 uses the v3 on-disk format and does not upgrade older files in place.** Any v1/v2
+> database must be converted offline with `tools/edb_migrate.py` (see [MIGRATION.md](MIGRATION.md));
+> `open()` returns `EDB_NEEDS_MIGRATION` for a legacy file. The 1.0.7 line is a maintenance release
+> that keeps the legacy file format. Always back up storage before upgrading to 2.0.0.
+
 ## Which release should I use?
 
 | Your situation | Recommended release |
@@ -71,27 +76,27 @@ Restore your backed-up 1.0.6 `EDB.h` and `EDB.cpp`. Data on storage is unaffecte
 
 ### By storage backend
 
-#### AVR internal / external EEPROM (same MCU)
+**All legacy data must be migrated offline** — 2.0.0 never upgrades a v1/v2 file in place, and
+`open()` on one returns `EDB_NEEDS_MIGRATION`.
 
-- Existing databases usually **open successfully** with `EDB_OK`.
-- The first write operation upgrades the header to the packed v2 format in place (12-byte header).
-- Record data at the same byte offset is preserved on AVR-style 12-byte v1 layouts.
+#### EEPROM (AVR internal/external, ESP32, I2C)
 
-#### ESP32 EEPROM / SPIFFS / SD (16-byte v1 header)
-
-- **Migrate before any writes** if you need to preserve existing records (`edb_migrate.py` or copy data out first).
-- **`clear()` is a destructive wipe**, not a migration: it resets `count()` to 0 and writes a v2 header, but old record bytes may remain on storage until overwritten. It also changes the record base offset from +16 to +12 — use only when you intend to discard data and start fresh.
-- Writes to an unmigrated ESP32 v1 database return `EDB_ERROR`.
+1. Dump the EEPROM region holding the database to a file on your PC.
+2. Migrate it: `python tools/edb_migrate.py dump.db migrated.db --arch auto`.
+   The v3 file is larger than the source (bigger header + per-slot CRC); use `--table-size` to fit a
+   fixed EEPROM region, or move to larger storage.
+3. Write `migrated.db` back to the same EEPROM offset.
+4. `open(0)` should return `EDB_OK`.
 
 #### SD card / SPIFFS file (any origin MCU)
 
 1. Copy the `.db` file to your PC.
-2. Run:
-   ```bash
-   python tools/edb_migrate.py device.db migrated.db --arch auto
-   ```
+2. Run `python tools/edb_migrate.py device.db migrated.db --arch auto`.
 3. Copy `migrated.db` back to the device.
 4. Open with `db.open(0)` and confirm `EDB_OK`.
+
+> **`clear()` is a destructive wipe, not a migration** — it resets the table to empty and writes a
+> fresh v3 header. Use it only when you intend to discard existing records.
 
 See [MIGRATION.md](MIGRATION.md) and [tools/README.md](../tools/README.md).
 
@@ -113,23 +118,18 @@ You may skip 1.0.7 if you accept the larger change set in a single upgrade. The 
 |------|-----|----------------|----------------|--------------|-----------|
 | 1.0.6 | 1.0.7 | Copy `release/1.0.7/EDB.*` | None | None | **None** |
 | 1.0.7 | 1.0.6 | Restore old files | None | None | None |
-| 1.0.7 | 2.0.0 | Copy root `EDB.*` | Optional `open()` check | See backend below | Low–Medium |
-| 1.0.6 | 2.0.0 | Copy root `EDB.*` | Optional `open()` check | See backend below | Low–Medium |
-| 1.0.x | 2.0.0 | AVR EEPROM, same board | Optional | Auto on first write | **Low** |
-| 1.0.x | 2.0.0 | ESP32 v1 EEPROM | Optional | Required before write | **High** without migration |
-| 1.0.x | 2.0.0 | SD / SPIFFS file | Optional | `edb_migrate.py` on PC | **Medium** |
-| 1.0.x | 2.0.0 | Cross-platform SD file | Optional | `edb_migrate.py --arch auto` | **Required** |
-| — | 2.0.0 | New project | Use 2.0.0 API | `create()` writes v2 | None |
+| 1.0.x / v2 | 2.0.0 | Copy root `EDB.*` | Update delete/insert/iteration idioms | Offline `edb_migrate.py` | **Medium** |
+| — | 2.0.0 | New project | Use 2.0.0 API | `create()` writes v3 | None |
 
 ### Storage backend summary
 
-| Backend | 1.0.6 → 1.0.7 | 1.0.x → 2.0.0 |
-|---------|---------------|---------------|
-| AVR EEPROM | No migration | Usually auto-upgrade on write |
-| ESP32 EEPROM | No migration | Migrate or recreate before write |
+| Backend | 1.0.6 → 1.0.7 | legacy → 2.0.0 (v3) |
+|---------|---------------|---------------------|
+| AVR EEPROM | No migration | Dump, `edb_migrate.py`, write back |
+| ESP32 EEPROM | No migration | Dump, `edb_migrate.py`, write back |
 | SD card file | No migration | Run `edb_migrate.py` |
 | SPIFFS file | No migration | Run `edb_migrate.py` |
-| AT24C1024 / I2C EEPROM | No migration | Same rules as host MCU |
+| AT24C1024 / I2C EEPROM | No migration | Dump, `edb_migrate.py`, write back |
 
 ---
 
@@ -138,10 +138,13 @@ You may skip 1.0.7 if you accept the larger change set in a single upgrade. The 
 | Item | 1.0.6 / 1.0.7 | 2.0.0 | Breaking? |
 |------|---------------|-------|-----------|
 | `clear()` return type | `void` | `EDB_Status` | No — safe if return value ignored |
-| `appendRec()` parameter | `EDB_Rec` | `const EDB_Rec` | No — source-compatible |
+| `appendRec()` | `EDB_Rec` | adds `appendRec(rec, &recno)` overload | No — source-compatible |
 | `extern EDB edb` | Declared in header | Still declared (use `#define EDB_NO_GLOBAL` to hide) | No for single-table sketches |
-| New `create()` databases | Compiler-dependent v1 layout | Packed 12-byte v2 header | Yes — for cross-platform new DBs |
-| `open()` on corrupt DB | 1.0.6: bogus `EDB_OK`; 1.0.7+: `EDB_ERROR` | `EDB_ERROR` | Behaviour fix |
+| On-disk format | Compiler-dependent v1 layout | v3 (redundant CRC header + framed slots) | **Yes** — migrate legacy files offline |
+| `recno` after delete | Renumbers (shift) | **Stable** — ids never renumber; iterate with `firstRec`/`nextRec` | **Yes** |
+| `insertRec(recno, …)` | Positional insert (shift) | Allocates a free slot; position **not** preserved | **Yes** |
+| New statuses | — | `EDB_DELETED`, `EDB_CORRUPT`, `EDB_NEEDS_MIGRATION` | Additive |
+| `open()` on legacy DB | opens (maybe wrongly) | `EDB_NEEDS_MIGRATION` | **Yes** |
 
 ---
 
