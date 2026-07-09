@@ -1,0 +1,9 @@
+body { font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 1rem; }
+header { border-bottom: 1px solid #ccc; margin-bottom: 1rem; }
+.sub { color: #555; font-size: 0.9rem; }
+.hidden { display: none; }
+section { margin-bottom: 1.5rem; padding: 1rem; border: 1px solid #ddd; border-radius: 6px; }
+label { display: inline-block; margin-right: 1rem; margin-bottom: 0.5rem; }
+table { width: 100%; border-collapse: collapse; }
+th, td { border: 1px solid #ddd; padding: 0.4rem; text-align: left; }
+button { margin-right: 0.5rem; }
