@@ -1,0 +1,64 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  native-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run native C++ tests (2.0.0)
+        run: make -C test test
+
+  native-tests-107:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run native C++ tests (1.0.7 drop-in)
+        run: make -C test test-107
+
+  migration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Run migration tool tests
+        run: python -m unittest discover -s tools -p "test_*.py"
+
+  api-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Check public API surfaces
+        run: python scripts/check_api.py
+
+  arduino-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+      - name: Install cores
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr
+          arduino-cli core install esp32:esp32 || true
+      - name: Install libraries
+        run: |
+          arduino-cli lib install "SD" || true
+      - name: Compile AVR examples (2.0.0)
+        run: |
+          for sketch in examples/*/*.ino; do
+            echo "Compiling $sketch for arduino:avr:uno"
+            arduino-cli compile --libraries . --fqbn arduino:avr:uno "$(dirname "$sketch")"
+          done
+
