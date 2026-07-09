@@ -8,6 +8,17 @@
 #include <SPI.h>
 #include <SD.h>
 #include <FS.h>
+#include <stdarg.h>
+
+// Transport session crypto is active only when both the bridge flag AND EDB_ENABLE_CRYPTO are set
+// (EDB_ENABLE_CRYPTO must be a global build flag so EDB_Crypto.cpp is compiled). Without it the
+// bridge runs in plaintext.
+#if EDB_BRIDGE_ENABLE_TRANSPORT_CRYPTO && defined(EDB_ENABLE_CRYPTO)
+#define EDB_BRIDGE_CRYPTO 1
+#include "bridge_session.h"
+#else
+#define EDB_BRIDGE_CRYPTO 0
+#endif
 
 static const char DB_PATH[] = "/edb_bridge.db";
 File dbFile;
@@ -31,9 +42,11 @@ static const size_t NUM_TABLES = sizeof(tables) / sizeof(tables[0]);
 static unsigned long active_head = 0;
 static bool sd_ok = false;
 
-#if EDB_BRIDGE_ENABLE_TRANSPORT_CRYPTO
+#if EDB_BRIDGE_CRYPTO
 static bool session_active = false;
-static char session_token[33] = {0};
+static uint8_t session_key[32];
+static uint32_t tx_counter = 0;   // device -> host
+static int64_t rx_counter = -1;   // last accepted host -> device counter
 #endif
 
 static char line_buf[EDB_BRIDGE_MAX_LINE];
@@ -134,66 +147,145 @@ static TableConfig *findTable(unsigned long head_ptr) {
   return nullptr;
 }
 
+static char g_out[EDB_BRIDGE_MAX_LINE];
+
+// Emit one response line: ChaCha20-Poly1305 framed when a session is active, else plaintext.
+static void emitLine(const char *body) {
+#if EDB_BRIDGE_CRYPTO
+  if (session_active) {
+    size_t blen = strlen(body);
+    if (blen > EDB_BRIDGE_MAX_LINE) blen = EDB_BRIDGE_MAX_LINE;
+    static uint8_t frame[12 + EDB_BRIDGE_MAX_LINE + EDB_CRYPTO_TAG_SIZE];
+    size_t flen = bridge_session_seal(session_key, EDB_BRIDGE_DIR_DEVICE, tx_counter++,
+                                      (const uint8_t *)body, blen, frame);
+    static char b64[((12 + EDB_BRIDGE_MAX_LINE + EDB_CRYPTO_TAG_SIZE) * 4) / 3 + 8];
+    b64encode(frame, flen, b64, sizeof(b64));
+    Serial.print("{\"enc\":\"");
+    Serial.print(b64);
+    Serial.println("\"}");
+    return;
+  }
+#endif
+  Serial.println(body);
+}
+
+static void replyFmt(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(g_out, sizeof(g_out), fmt, ap);
+  va_end(ap);
+  emitLine(g_out);
+}
+
 static void replyOk(long id, const char *extra) {
   if (extra && extra[0])
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{%s}}\n", id, extra);
+    snprintf(g_out, sizeof(g_out), "{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{%s}}", id, extra);
   else
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\"}\n", id);
+    snprintf(g_out, sizeof(g_out), "{\"id\":%ld,\"status\":\"EDB_OK\"}", id);
+  emitLine(g_out);
 }
 
 static void replyErr(long id, EDB_Status st) {
-  Serial.printf("{\"id\":%ld,\"status\":\"%s\"}\n", id, statusStr(st));
+  snprintf(g_out, sizeof(g_out), "{\"id\":%ld,\"status\":\"%s\"}", id, statusStr(st));
+  emitLine(g_out);
 }
 
-static void handleCommand(const char *json) {
+static void handleCommand(const char *raw) {
+  const char *json = raw;
+
+#if EDB_BRIDGE_CRYPTO
+  static char decbuf[EDB_BRIDGE_MAX_LINE];
+  if (session_active) {
+    // Once paired, every command must arrive as an authenticated {"enc":"..."} frame.
+    static char enc_b64[EDB_BRIDGE_MAX_LINE];
+    if (!jsonStr(raw, "enc", enc_b64, sizeof(enc_b64))) {
+      replyFmt("{\"id\":0,\"status\":\"EDB_ERROR\",\"data\":{\"error\":\"encrypted_required\"}}");
+      return;
+    }
+    static uint8_t frame[EDB_BRIDGE_MAX_LINE];
+    size_t flen = b64decode(enc_b64, frame, sizeof(frame));
+    uint32_t counter = 0;
+    int n = bridge_session_open(session_key, EDB_BRIDGE_DIR_HOST, frame, flen, (uint8_t *)decbuf, &counter);
+    if (n < 0 || (int64_t)counter <= rx_counter) {   // auth failure or replay
+      replyFmt("{\"id\":0,\"status\":\"EDB_ERROR\",\"data\":{\"error\":\"decrypt\"}}");
+      return;
+    }
+    rx_counter = (int64_t)counter;
+    decbuf[n] = 0;
+    json = decbuf;
+  }
+#endif
+
   long id = jsonLong(json, "id");
   char cmd[24] = {0};
   if (!jsonStr(json, "cmd", cmd, sizeof(cmd))) {
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id >= 0 ? id : 0);
+    replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id >= 0 ? id : 0);
     return;
   }
 
   if (strcmp(cmd, "ping") == 0) {
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"version\":\"%s\"}}\n", id, EDB_BRIDGE_VERSION);
+    replyFmt("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"version\":\"%s\"}}", id, EDB_BRIDGE_VERSION);
     return;
   }
 
-#if EDB_BRIDGE_ENABLE_TRANSPORT_CRYPTO
+#if EDB_BRIDGE_CRYPTO
   if (strcmp(cmd, "pair") == 0) {
-    char token[64] = {0};
-    jsonStr(json, "token", token, sizeof(token));
-    if (strlen(token) >= 8) {
-      strncpy(session_token, token, sizeof(session_token) - 1);
-      session_active = true;
-      Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"paired\":true}}\n", id);
-    } else {
-      Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id);
+    char hnonce_b64[24] = {0};
+    uint8_t host_nonce[EDB_CRYPTO_NONCE_SIZE];
+    if (!jsonStr(json, "hnonce", hnonce_b64, sizeof(hnonce_b64)) ||
+        b64decode(hnonce_b64, host_nonce, sizeof(host_nonce)) != EDB_CRYPTO_NONCE_SIZE) {
+      replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
+      return;
     }
+    uint8_t dev_nonce[EDB_CRYPTO_NONCE_SIZE];
+    for (unsigned i = 0; i < EDB_CRYPTO_NONCE_SIZE; i += 4) {
+#if defined(ESP32)
+      uint32_t r = esp_random();
+#else
+      uint32_t r = ((uint32_t)random(65536) << 16) ^ (uint32_t)micros();
+#endif
+      unsigned take = (EDB_CRYPTO_NONCE_SIZE - i) >= 4 ? 4 : (EDB_CRYPTO_NONCE_SIZE - i);
+      memcpy(dev_nonce + i, &r, take);
+    }
+    edb_crypto_session_key(EDB_BRIDGE_PSK, host_nonce, dev_nonce, session_key);
+    uint8_t confirm[EDB_CRYPTO_TAG_SIZE];
+    edb_crypto_session_confirm(session_key, confirm);
+    char dn_b64[20], cf_b64[28];
+    b64encode(dev_nonce, EDB_CRYPTO_NONCE_SIZE, dn_b64, sizeof(dn_b64));
+    b64encode(confirm, EDB_CRYPTO_TAG_SIZE, cf_b64, sizeof(cf_b64));
+    tx_counter = 0;
+    rx_counter = -1;
+    // The pairing reply is cleartext (the host has not confirmed the key yet); activate after.
+    Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"dnonce\":\"%s\",\"confirm\":\"%s\"}}\n",
+                  id, dn_b64, cf_b64);
+    session_active = true;
     return;
   }
 #endif
 
   if (strcmp(cmd, "info") == 0) {
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"tables\":[", id);
-    for (size_t i = 0; i < NUM_TABLES; i++) {
-      if (i) Serial.print(',');
-      Serial.printf("{\"head_ptr\":%lu,\"table_size\":%lu,\"rec_size\":%u,\"label\":\"%s\"}",
-        tables[i].head_ptr, tables[i].table_size, tables[i].rec_size, tables[i].label);
+    int off = snprintf(g_out, sizeof(g_out), "{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"tables\":[", id);
+    for (size_t i = 0; i < NUM_TABLES && off > 0 && (size_t)off < sizeof(g_out); i++) {
+      off += snprintf(g_out + off, sizeof(g_out) - off,
+                      "%s{\"head_ptr\":%lu,\"table_size\":%lu,\"rec_size\":%u,\"label\":\"%s\"}",
+                      i ? "," : "", tables[i].head_ptr, tables[i].table_size, tables[i].rec_size, tables[i].label);
     }
-    Serial.println("]}}");
+    if (off > 0 && (size_t)off < sizeof(g_out))
+      snprintf(g_out + off, sizeof(g_out) - off, "]}}");
+    emitLine(g_out);
     return;
   }
 
-#if EDB_BRIDGE_ENABLE_TRANSPORT_CRYPTO
-  // All database commands require an established session when transport crypto is enabled.
+#if EDB_BRIDGE_CRYPTO
+  // With crypto built in, database commands require an active session.
   if (!session_active) {
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\",\"data\":{\"error\":\"not_paired\"}}\n", id);
+    replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\",\"data\":{\"error\":\"not_paired\"}}", id);
     return;
   }
 #endif
 
   if (!sd_ok) {
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id);
+    replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
     return;
   }
 
@@ -201,7 +293,7 @@ static void handleCommand(const char *json) {
   if (head_ptr < 0) head_ptr = (long)active_head;
   TableConfig *tc = findTable((unsigned long)head_ptr);
   if (!tc) {
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id);
+    replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
     return;
   }
 
@@ -228,13 +320,13 @@ static void handleCommand(const char *json) {
 
   if (strcmp(cmd, "count") == 0) {
     if (db.open(tc->head_ptr) != EDB_OK) { replyErr(id, EDB_ERROR); return; }
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"count\":%lu}}\n", id, db.count());
+    replyFmt("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"count\":%lu}}", id, db.count());
     return;
   }
 
   if (strcmp(cmd, "limit") == 0) {
     if (db.open(tc->head_ptr) != EDB_OK) { replyErr(id, EDB_ERROR); return; }
-    Serial.printf("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"limit\":%lu}}\n", id, db.limit());
+    replyFmt("{\"id\":%ld,\"status\":\"EDB_OK\",\"data\":{\"limit\":%lu}}", id, db.limit());
     return;
   }
 
@@ -270,12 +362,12 @@ static void handleCommand(const char *json) {
 
   if (strcmp(cmd, "appendRec") == 0 || strcmp(cmd, "updateRec") == 0 || strcmp(cmd, "insertRec") == 0) {
     if (!jsonStr(json, "payload_b64", payload_b64, sizeof(payload_b64))) {
-      Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id);
+      replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
       return;
     }
     size_t n = b64decode(payload_b64, rec_buf, sizeof(rec_buf));
     if (n == 0 || n > rs) {
-      Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id);
+      replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
       return;
     }
     while (n < rs) rec_buf[n++] = 0;
@@ -302,7 +394,7 @@ static void handleCommand(const char *json) {
     return;
   }
 
-  Serial.printf("{\"id\":%ld,\"status\":\"EDB_ERROR\"}\n", id);
+  replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
 }
 
 void setup() {

@@ -10,10 +10,9 @@ crypto lives in `EDB_Crypto` (the C reference implementation, used for tests and
 | Layer | Status |
 |-------|--------|
 | At-rest per-record AEAD (`EDB_Crypto`) | **Implemented** — RFC 8439 ChaCha20-Poly1305 |
-| Transport (serial wire) encryption | **Not implemented** — pairing establishes a session token but the serial line is currently plaintext. Do not rely on it for confidentiality; keep the USB link physically trusted or add a secure channel. |
-| Browser end-to-end encryption (manager UI) | **Not implemented** — the manager UI stores/shows record bytes as-is; wire your own encrypt/decrypt with `EDB_Crypto`-compatible framing before relying on E2E. |
-
-The sections below marked *(planned)* are design intent, not shipped behavior.
+| Transport (serial wire) encryption | **Implemented** — PSK session, ChaCha20-Poly1305 line framing (see below) |
+| Browser end-to-end encryption (manager UI) | In progress |
+| On-device autonomous at-rest encryption (bridge) | In progress |
 
 ## At-rest: per-record AEAD
 
@@ -44,6 +43,34 @@ edb_crypto_open_record(key, table_id, record_id, in, in_len, plaintext, &pt_len)
 ```
 
 `seal_record`/`open_record` produce and consume the `nonce || ciphertext || tag` framing above.
+
+## Transport (serial wire) encryption
+
+Protects the USB-serial link between the gateway and the Serial Bridge against passive sniffing and
+unauthorized hosts, using a **pre-shared key (PSK)** provisioned on both sides (device: `EDB_BRIDGE_PSK`
+in `config.h`; gateway: `EDB_GATEWAY_PSK`). Requires the `-DEDB_ENABLE_CRYPTO` build flag on the
+bridge; without it the bridge runs in plaintext.
+
+Handshake (nonces are public, sent in the clear):
+
+```
+host -> device : {"cmd":"pair","hnonce": <random 12B>}
+device -> host : {"status":"EDB_OK","data":{"dnonce": <random 12B>, "confirm": <16B>}}
+session_key = ChaCha20(psk, hnonce, ctr=1)[0..31] XOR ChaCha20(psk, dnonce, ctr=1)[0..31]
+confirm     = ChaCha20(session_key, zero_nonce, ctr=1)[0..15]   (proves both sides share the PSK)
+```
+
+After pairing, every command and response line is ChaCha20-Poly1305 framed:
+
+```
+line = {"enc": base64( nonce(12) || ciphertext || tag(16) )}
+nonce = direction(1) || counter(LE64) || 0x000000      dir 0x01 host->device, 0x02 device->host
+```
+
+Per-direction monotonic counters prevent replay/reordering. A wrong or missing PSK fails the
+`confirm` check and pairing is refused. The session key is derived with a ChaCha20 PRF (no SHA
+needed on the MCU); it is cross-validated by a shared known-answer test in the native C suite and
+the gateway tests.
 
 ## Key hierarchy *(caller responsibility)*
 

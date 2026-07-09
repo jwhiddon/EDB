@@ -4,6 +4,7 @@
 #if defined(EDB_ENABLE_CRYPTO)
 
 #include <string.h>
+#include "../examples/EDB_SerialBridge/bridge_session.h"
 
 // RFC 8439 section 2.8.2 AEAD ChaCha20-Poly1305 known-answer test.
 void test_aead_rfc8439_vector() {
@@ -106,6 +107,69 @@ void test_seal_record_shared_kat() {
   TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_sealed, blob, 32);
 }
 
+// Transport session KDF + line encryption, cross-checked against OpenSSL (Python).
+void test_session_transport_kat() {
+  uint8_t psk[32];
+  for (int i = 0; i < 32; i++) psk[i] = 0x11;
+  uint8_t hn[12], dn[12];
+  for (int i = 0; i < 12; i++) { hn[i] = (uint8_t)i; dn[i] = (uint8_t)(0x10 + i); }
+
+  uint8_t sk[32];
+  edb_crypto_session_key(psk, hn, dn, sk);
+  static const uint8_t expect_sk[32] = {
+    0xb6,0x70,0x0e,0x5e,0x51,0x5e,0x4b,0x74,0x60,0x3e,0x79,0x0a,0x87,0xaf,0x81,0x05,
+    0x69,0x9d,0x4e,0x2b,0xca,0x4a,0xd5,0x18,0x5d,0xad,0x68,0xe4,0xc1,0x76,0xb1,0x93 };
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_sk, sk, 32);
+
+  uint8_t confirm[16];
+  edb_crypto_session_confirm(sk, confirm);
+  static const uint8_t expect_confirm[16] = {
+    0xb5,0x27,0x69,0xea,0x7a,0x9a,0x86,0xd2,0x41,0x23,0x69,0xb9,0x73,0x70,0xc2,0xc0 };
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_confirm, confirm, 16);
+
+  // one encrypted line: dir=1, counter=1
+  uint8_t nonce[12] = {0x01,0x01,0,0,0,0,0,0,0,0,0,0};
+  const char *pt = "{\"id\":1,\"cmd\":\"ping\"}";
+  const size_t pt_len = 21;
+  uint8_t ct[64]; uint8_t tag[16];
+  edb_crypto_aead_encrypt(sk, nonce, NULL, 0, (const uint8_t*)pt, pt_len, ct, tag);
+  static const uint8_t expect_ct[21] = {
+    0xe2,0x2f,0xf5,0x7a,0x83,0x58,0xae,0x99,0xb4,0x88,0x21,0x59,0x0d,0x9c,0x3d,0xfd,0xb8,0xcd,0xb1,0xb1,0x48 };
+  static const uint8_t expect_tag[16] = {
+    0xb6,0x9e,0xd3,0x2a,0xd5,0x52,0xee,0x9a,0x51,0x5a,0x7d,0x47,0xb3,0x51,0x02,0xee };
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_ct, ct, pt_len);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_tag, tag, 16);
+}
+
+// The bridge's device-side line framing must match the gateway (same KAT frame).
+void test_bridge_session_frame_kat() {
+  static const uint8_t sk[32] = {
+    0xb6,0x70,0x0e,0x5e,0x51,0x5e,0x4b,0x74,0x60,0x3e,0x79,0x0a,0x87,0xaf,0x81,0x05,
+    0x69,0x9d,0x4e,0x2b,0xca,0x4a,0xd5,0x18,0x5d,0xad,0x68,0xe4,0xc1,0x76,0xb1,0x93 };
+  const char *pt = "{\"id\":1,\"cmd\":\"ping\"}";
+  const size_t pt_len = 21;
+  static const uint8_t expect_frame[12 + 21 + 16] = {
+    0x01,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,                     // nonce
+    0xe2,0x2f,0xf5,0x7a,0x83,0x58,0xae,0x99,0xb4,0x88,0x21,0x59,0x0d,0x9c,0x3d,0xfd,0xb8,0xcd,0xb1,0xb1,0x48, // ct
+    0xb6,0x9e,0xd3,0x2a,0xd5,0x52,0xee,0x9a,0x51,0x5a,0x7d,0x47,0xb3,0x51,0x02,0xee }; // tag
+
+  uint8_t frame[64];
+  size_t flen = bridge_session_seal(sk, EDB_BRIDGE_DIR_HOST, 1, (const uint8_t*)pt, pt_len, frame);
+  TEST_ASSERT_EQUAL_UINT32(12 + pt_len + 16, (unsigned)flen);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_frame, frame, (int)flen);
+
+  uint8_t out[64]; uint32_t counter = 0;
+  int n = bridge_session_open(sk, EDB_BRIDGE_DIR_HOST, frame, flen, out, &counter);
+  TEST_ASSERT_EQUAL_INT((int)pt_len, n);
+  TEST_ASSERT_EQUAL_UINT32(1, counter);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY((const uint8_t*)pt, out, (int)pt_len);
+
+  // wrong direction and tamper are rejected
+  TEST_ASSERT_EQUAL_INT(-1, bridge_session_open(sk, EDB_BRIDGE_DIR_DEVICE, frame, flen, out, &counter));
+  frame[flen - 1] ^= 0x01;
+  TEST_ASSERT_EQUAL_INT(-1, bridge_session_open(sk, EDB_BRIDGE_DIR_HOST, frame, flen, out, &counter));
+}
+
 int run_crypto_tests() {
   UNITY_BEGIN();
   RUN_TEST(test_aead_rfc8439_vector);
@@ -114,6 +178,8 @@ int run_crypto_tests() {
   RUN_TEST(test_seal_swap_rejected);
   RUN_TEST(test_nonce_uniqueness_changes_ciphertext);
   RUN_TEST(test_seal_record_shared_kat);
+  RUN_TEST(test_session_transport_kat);
+  RUN_TEST(test_bridge_session_frame_kat);
   return UNITY_END();
 }
 #else

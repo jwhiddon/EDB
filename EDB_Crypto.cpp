@@ -307,6 +307,27 @@ int edb_crypto_open_record(const uint8_t key[EDB_CRYPTO_KEY_SIZE],
   return 0;
 }
 
+/* ------------------------------------------------------------------ transport session (PSK) */
+
+void edb_crypto_session_key(const uint8_t psk[EDB_CRYPTO_KEY_SIZE],
+                            const uint8_t host_nonce[EDB_CRYPTO_NONCE_SIZE],
+                            const uint8_t dev_nonce[EDB_CRYPTO_NONCE_SIZE],
+                            uint8_t out_key[EDB_CRYPTO_KEY_SIZE]) {
+  uint8_t bh[64];
+  uint8_t bd[64];
+  edb_chacha20_block(psk, host_nonce, 1, bh);   /* counter 1 = keystream used by the AEAD */
+  edb_chacha20_block(psk, dev_nonce, 1, bd);
+  for (int i = 0; i < 32; i++) out_key[i] = (uint8_t)(bh[i] ^ bd[i]);
+}
+
+void edb_crypto_session_confirm(const uint8_t session_key[EDB_CRYPTO_KEY_SIZE],
+                                uint8_t out[EDB_CRYPTO_TAG_SIZE]) {
+  uint8_t zero_nonce[EDB_CRYPTO_NONCE_SIZE] = {0};
+  uint8_t b[64];
+  edb_chacha20_block(session_key, zero_nonce, 1, b);
+  memcpy(out, b, EDB_CRYPTO_TAG_SIZE);
+}
+
 /* ------------------------------------------------------------------ table descriptor helpers */
 
 size_t edb_crypto_parse_ext(const uint8_t *ext_bytes, size_t max_len, EDB_CryptoExtHeader *out) {

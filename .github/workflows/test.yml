@@ -78,10 +78,12 @@ jobs:
             echo "Compiling $sketch for arduino:avr:uno"
             arduino-cli compile --library . --fqbn arduino:avr:uno "$(dirname "$sketch")"
           done
-      - name: Compile ESP32 SerialBridge
+      - name: Compile ESP32 SerialBridge (with transport crypto)
         run: |
           if arduino-cli core list | grep -q esp32:esp32; then
-            arduino-cli compile --library . --fqbn esp32:esp32:esp32 examples/EDB_SerialBridge
+            arduino-cli compile --library . --fqbn esp32:esp32:esp32 \
+              --build-property "compiler.cpp.extra_flags=-DEDB_ENABLE_CRYPTO" \
+              examples/EDB_SerialBridge
           else
             echo "ESP32 core not available; skipping SerialBridge compile"
           fi

@@ -36,3 +36,20 @@ ALLOWED_HOSTS = _split_env(
 
 def host_is_loopback() -> bool:
     return HOST in ("127.0.0.1", "::1", "localhost")
+
+
+def _psk() -> bytes | None:
+    """32-byte transport pre-shared key (hex), shared with the device firmware."""
+    raw = os.environ.get("EDB_GATEWAY_PSK")
+    if not raw:
+        return None
+    try:
+        key = bytes.fromhex(raw)
+    except ValueError as exc:
+        raise RuntimeError("EDB_GATEWAY_PSK must be hex") from exc
+    if len(key) != 32:
+        raise RuntimeError("EDB_GATEWAY_PSK must decode to 32 bytes (64 hex chars)")
+    return key
+
+
+PSK = _psk()

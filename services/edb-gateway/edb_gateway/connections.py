@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import secrets
 import uuid
 from dataclasses import dataclass
 
+from . import config
 from .backends.device import DeviceBackend
 from .config import insecure_allowed
 from .transports import EncryptedTransport, MockTransport, SerialTransport, Transport
@@ -33,9 +33,12 @@ class ConnectionManager:
         mock: bool = False,
     ) -> Connection:
         if encrypt:
-            token = pairing_token or uuid.uuid4().hex
+            if config.PSK is None:
+                raise PermissionError(
+                    "transport encryption requires EDB_GATEWAY_PSK (or set encrypt=false)"
+                )
             inner: Transport = MockTransport() if mock else SerialTransport(port, baud)
-            transport: Transport = EncryptedTransport(inner, token=token)
+            transport: Transport = EncryptedTransport(inner, psk=config.PSK)
         else:
             if not insecure_allowed():
                 raise PermissionError("plaintext transport requires EDB_GATEWAY_INSECURE=1")
@@ -48,12 +51,7 @@ class ConnectionManager:
         return conn
 
     async def create_mock(self, encrypt: bool = False) -> Connection:
-        return await self.create_serial(
-            port="mock",
-            encrypt=encrypt,
-            pairing_token=secrets.token_hex(16),
-            mock=True,
-        )
+        return await self.create_serial(port="mock", encrypt=encrypt, mock=True)
 
     async def close(self, conn_id: str) -> None:
         conn = self._connections.pop(conn_id, None)

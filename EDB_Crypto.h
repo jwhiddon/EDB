@@ -99,6 +99,19 @@ int edb_crypto_open_record(const uint8_t key[EDB_CRYPTO_KEY_SIZE],
                            const uint8_t *in, size_t in_len,
                            uint8_t *plaintext, size_t *pt_len);
 
+/* --- Transport session (PSK) --- */
+
+/* Derive a 32-byte session key from a pre-shared key and the two public handshake nonces.
+   session_key = ChaCha20(psk, host_nonce, ctr=1)[0..31] XOR ChaCha20(psk, dev_nonce, ctr=1)[0..31]. */
+void edb_crypto_session_key(const uint8_t psk[EDB_CRYPTO_KEY_SIZE],
+                            const uint8_t host_nonce[EDB_CRYPTO_NONCE_SIZE],
+                            const uint8_t dev_nonce[EDB_CRYPTO_NONCE_SIZE],
+                            uint8_t out_key[EDB_CRYPTO_KEY_SIZE]);
+
+/* Key-confirmation value proving both sides derived the same session key (16 bytes). */
+void edb_crypto_session_confirm(const uint8_t session_key[EDB_CRYPTO_KEY_SIZE],
+                                uint8_t out[EDB_CRYPTO_TAG_SIZE]);
+
 /* --- Table descriptor helpers (metadata only) --- */
 
 size_t edb_crypto_parse_ext(const uint8_t *ext_bytes, size_t max_len, EDB_CryptoExtHeader *out);

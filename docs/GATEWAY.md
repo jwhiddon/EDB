@@ -136,10 +136,13 @@ After `pair`, line payloads may be wrapped in a transport cipher (see [ENCRYPTIO
 
 ## Pairing flow
 
-1. Flash [EDB_SerialBridge](../examples/EDB_SerialBridge/) on ESP32 + SD.
-2. Gateway `POST /connections` with `encrypt: true`.
-3. Gateway sends serial `pair` with token; device confirms.
-4. Subsequent serial lines use session encryption (PSK-AES or Noise, platform-dependent).
+1. Flash [EDB_SerialBridge](../examples/EDB_SerialBridge/) on ESP32 + SD, built with
+   `-DEDB_ENABLE_CRYPTO` and a `EDB_BRIDGE_PSK` matching the gateway's `EDB_GATEWAY_PSK`.
+2. Gateway `POST /connections` with `encrypt: true` (requires `EDB_GATEWAY_PSK` to be set).
+3. Gateway and device exchange public nonces and derive a session key from the shared PSK; the
+   gateway verifies the device's `confirm` value.
+4. Subsequent serial lines are ChaCha20-Poly1305 encrypted with per-direction counters. See
+   [ENCRYPTION.md](ENCRYPTION.md) § Transport.
 5. User opens `/manager`, enters passphrase locally (never sent to server).
 
 ## Dev mode (plaintext transport)
