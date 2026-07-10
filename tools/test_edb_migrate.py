@@ -16,10 +16,12 @@ sys.path.insert(0, str(TOOLS_DIR))
 from edb_migrate import (  # noqa: E402
     EDB_FLAG,
     V2_HEADER_FMT,
+    V2_HEADER_SIZE,
     V2_VERSION,
     V3_HEADER_COPY_SIZE,
     V3_SLOT_LIVE,
     V3_VERSION,
+    build_v1,
     crc16_ccitt_edb,
     crc32_edb,
     migrate_bytes,
@@ -146,6 +148,49 @@ class MigrateBytesTests(unittest.TestCase):
         table_size = struct.unpack_from("<I", migrated, 20)[0]
         self.assertEqual(table_size, 96 + 13 * (1 + REC_SIZE + 2))
 
+    def test_migrate_v1_to_v2(self) -> None:
+        records = [struct.pack("<I", v) for v in (11, 22, 33)]
+        migrated, header, changed = migrate_bytes(build_v1_avr(3, records), "avr", target="v2")
+        self.assertTrue(changed)
+        self.assertEqual(header.version, 1)
+        out = read_header(migrated, "auto")
+        self.assertEqual(out.version, V2_VERSION)
+        self.assertEqual(out.n_recs, 3)
+        self.assertEqual(out.rec_size, REC_SIZE)
+        flat = migrated[V2_HEADER_SIZE : V2_HEADER_SIZE + 3 * REC_SIZE]
+        self.assertEqual(flat, b"".join(records))
+
+    def test_already_v2_target_v2_is_noop(self) -> None:
+        source = build_v2(2, [struct.pack("<I", v) for v in (1, 2)])
+        again, header, changed = migrate_bytes(source, "auto", target="v2")
+        self.assertFalse(changed)
+        self.assertEqual(header.version, V2_VERSION)
+        self.assertEqual(again, source)
+
+    def test_v3_to_v2_rejected(self) -> None:
+        v3, _, _ = migrate_bytes(build_v1_avr(1, [struct.pack("<I", 7)]), "avr")
+        with self.assertRaises(ValueError):
+            migrate_bytes(v3, "auto", target="v2")
+
+    def test_unknown_target_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            migrate_bytes(build_v1_avr(1, [struct.pack("<I", 1)]), "avr", target="v9")
+
+    def test_build_v1_round_trips(self) -> None:
+        payload = bytes(range(3 * 5))  # 3 records of 5 bytes
+        for arch in ("avr", "esp32"):
+            data = build_v1(arch, 5, payload)
+            header = read_header(data, arch)
+            self.assertEqual(header.version, 1)
+            self.assertEqual(header.n_recs, 3)
+            self.assertEqual(header.rec_size, 5)
+            body = data[header.header_size : header.header_size + 15]
+            self.assertEqual(body, payload)
+
+    def test_build_v1_avr_rejects_oversize_table(self) -> None:
+        with self.assertRaises(ValueError):
+            build_v1("avr", 4, b"\x00" * 4, table_size=70000)  # exceeds 16-bit avr field
+
 
 class MigrateCliTests(unittest.TestCase):
     def test_cli_round_trip(self) -> None:
@@ -163,6 +208,24 @@ class MigrateCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             out_records, _, _ = parse_v3(output_path.read_bytes())
             self.assertEqual(out_records, records)
+
+    def test_cli_to_v2(self) -> None:
+        records = [struct.pack("<I", v) for v in (7, 8, 9)]
+        source = build_v1_avr(3, records)
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = Path(tmp) / "input.db"
+            output_path = Path(tmp) / "output_v2.db"
+            input_path.write_bytes(source)
+            result = subprocess.run(
+                [sys.executable, str(TOOLS_DIR / "edb_migrate.py"),
+                 str(input_path), str(output_path), "--to", "v2", "--arch", "avr"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            out = read_header(output_path.read_bytes(), "auto")
+            self.assertEqual(out.version, V2_VERSION)
+            flat = output_path.read_bytes()[V2_HEADER_SIZE : V2_HEADER_SIZE + 3 * REC_SIZE]
+            self.assertEqual(flat, b"".join(records))
 
     def test_cli_refuses_overwrite_without_force(self) -> None:
         source = build_v1_avr(1, [struct.pack("<I", 1)])

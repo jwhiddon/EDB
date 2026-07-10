@@ -5,14 +5,42 @@ to device storage when finished.
 
 ## edb_migrate.py
 
-Converts legacy EDB v1/v2 database files to the v3 format.
+Converts legacy EDB v1/v2 database files to v2 or v3 (choose with `--to`; default `v3`).
 
 ```bash
-python tools/edb_migrate.py input.db output.db --arch auto
-python tools/edb_migrate.py input.db output.db --force
+python tools/edb_migrate.py input.db output.db                 # v1/v2 -> v3 (default)
+python tools/edb_migrate.py input.db output.db --to v2         # v1 -> v2 (legacy firmware)
+python tools/edb_migrate.py input.db output.db --arch avr --force
 ```
 
-See script `--help` for `--arch avr|esp32|auto`.
+`v3` is the recommended target (redundant CRC32 header, per-record CRC16, O(1) delete). `v1 -> v2`
+is a header rewrite only — record bytes are copied verbatim — useful when targeting older firmware
+that still reads the packed v2 format. Downgrading `v3 -> v2` is intentionally refused (it would drop
+integrity metadata). See `--help` for `--arch avr|esp32|auto` and `--table-size`.
+
+## edb_make_v1.py
+
+Generates a legacy v1 (AVR/ESP32) database file, mainly for testing the converter above. Record
+contents come from one of three sources:
+
+- **generated** — seeded pseudo-random bytes, reproducible for a given `--seed` (default);
+- **`--from-raw FILE`** — raw record bytes copied from any file;
+- **`--from-dataset PATH`** — a [`gen_datasets.py`](gen_datasets.py) output (the `sensorlog.json`
+  manifest or its directory). This reads `record_size` and `count` from the manifest, loads the
+  matching `.bin`, and verifies it against the manifest's size and FNV-1a hash — so you don't hand-
+  specify `--rec-size`/`--count` and a stale/corrupt dataset is caught early.
+
+```bash
+python tools/edb_make_v1.py legacy.db --arch avr --rec-size 22 --count 64
+python tools/edb_make_v1.py legacy.db --rec-size 22 --count 64 --from-raw test/data/sensorlog.bin
+python tools/edb_make_v1.py legacy.db --from-dataset test/data --arch esp32   # reads the manifest
+python tools/edb_make_v1.py legacy.db --rec-size 4 --count 8 --table-size 128 --force
+```
+
+`--rec-size`/`--count` may still be given alongside `--from-dataset` to take a subset (an explicit
+`--rec-size` that disagrees with the manifest is rejected). Note the AVR `table_size` field is 16-bit,
+so large datasets need `--arch esp32`. Because generation is deterministic, a test can regenerate the
+same records and assert they survive `edb_migrate.py` byte-for-byte. See `--help` for all options.
 
 ## edb_check.py
 

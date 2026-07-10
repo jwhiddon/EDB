@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""Convert legacy EDB v1 (AVR/ESP32) or v2 database files to the v3 format.
+"""Convert legacy EDB database files between on-disk formats.
+
+Reads a v1 (AVR/ESP32) or v2 file and writes a v2 or v3 file (choose with --to; default v3).
 
 v3 uses a redundant, CRC32-checksummed 48-byte header (stored twice) and framed record
 slots (status byte + CRC16). Migrated records are written as dense LIVE slots with stable
-ids 1..N. Run this on a computer, then copy the output file back to the device's storage.
+ids 1..N. v2 is the legacy packed format: a single 12-byte header and flat, unframed records.
+
+Converting v1 -> v2 is a header rewrite only (record bytes are copied verbatim), useful when
+targeting older firmware that still reads v2. v3 is the recommended target for its crash-safety
+and per-record integrity. Downgrading v3 -> v2/v1 is intentionally not supported (it would drop
+integrity metadata and reintroduce the defects v3 fixes).
+
+Run this on a computer, then copy the output file back to the device's storage.
 """
 
 from __future__ import annotations
@@ -106,6 +115,44 @@ def parse_v1(data: bytes, layout: V1Layout) -> EdbHeader:
     return EdbHeader(flag, V1_VERSION, n_recs, rec_size, table_size, layout.header_size)
 
 
+def build_v1(arch: str, rec_size: int, records: bytes,
+             table_size: int | None = None) -> bytes:
+    """Assemble a legacy v1 file (the exact inverse of parse_v1). Useful for producing test
+    inputs for the converter. `records` is the flat record region; its length must be a whole
+    number of rec_size records. table_size defaults to a tight fit; a larger value pads with
+    0xFF (the erased-storage convention)."""
+    layouts = {layout.name: layout for layout in V1_LAYOUTS}
+    if arch not in layouts:
+        raise ValueError(f"unknown architecture: {arch} (expected 'avr' or 'esp32')")
+    layout = layouts[arch]
+    n_recs, remainder = divmod(len(records), rec_size)
+    if rec_size == 0:
+        raise ValueError("record size must be greater than zero")
+    if remainder != 0:
+        raise ValueError("record bytes are not a whole number of records")
+    tight = layout.header_size + len(records)
+    if table_size is None:
+        table_size = tight
+    elif table_size < tight:
+        raise ValueError("requested table-size too small for the given records")
+    if layout.table_size_width == 2 and table_size > 0xFFFF:
+        raise ValueError("table-size exceeds the 16-bit avr field; use --arch esp32")
+
+    header = bytearray(layout.header_size)
+    header[0] = EDB_FLAG
+    struct.pack_into("<I", header, layout.n_recs_offset, n_recs)
+    struct.pack_into("<H", header, layout.rec_size_offset, rec_size)
+    if layout.table_size_width == 2:
+        struct.pack_into("<H", header, layout.table_size_offset, table_size)
+    else:
+        struct.pack_into("<I", header, layout.table_size_offset, table_size)
+    out = bytearray(header)
+    out.extend(records)
+    if len(out) < table_size:
+        out.extend(b"\xFF" * (table_size - len(out)))
+    return bytes(out)
+
+
 def validate_header(header: EdbHeader, file_size: int) -> None:
     if header.flag != EDB_FLAG:
         raise ValueError("invalid EDB flag byte")
@@ -184,17 +231,62 @@ def build_v3_slot(payload: bytes) -> bytes:
     return status + payload + struct.pack("<H", crc)
 
 
-def migrate_bytes(data: bytes, arch: str, table_size: int | None = None) -> tuple[bytes, EdbHeader, bool]:
+def build_v2(n_recs: int, rec_size: int, table_size: int, records: bytes) -> bytes:
+    header = struct.pack(V2_HEADER_FMT, EDB_FLAG, V2_VERSION, n_recs, rec_size, table_size)
+    out = bytearray(header)
+    out.extend(records)
+    if len(out) < table_size:
+        out.extend(b"\xFF" * (table_size - len(out)))  # 0xFF = erased-storage convention (matches v1)
+    elif len(out) > table_size:
+        raise ValueError("computed v2 file larger than table size")
+    return bytes(out)
+
+
+def _extract_records(data: bytes, header: EdbHeader) -> bytes:
+    record_bytes = header.n_recs * header.rec_size
+    records = data[header.header_size : header.header_size + record_bytes]
+    if len(records) != record_bytes:
+        raise ValueError("missing record bytes in source file")
+    return records
+
+
+def _migrate_to_v2(data: bytes, header: EdbHeader,
+                   table_size: int | None) -> tuple[bytes, EdbHeader, bool]:
+    if header.version == V2_VERSION:
+        return data, header, False
+    if header.version == V3_VERSION:
+        raise ValueError("downgrade from v3 to v2 is not supported")
+
+    rec_size = header.rec_size
+    n_recs = header.n_recs
+    records = _extract_records(data, header)
+
+    # Preserve the original record capacity unless the caller overrides table_size.
+    src_capacity = (header.table_size - header.header_size) // rec_size
+    capacity = max(src_capacity, n_recs)
+    new_table_size = V2_HEADER_SIZE + capacity * rec_size
+    if table_size is not None:
+        if table_size < V2_HEADER_SIZE + n_recs * rec_size:
+            raise ValueError("requested --table-size too small for the existing records")
+        new_table_size = table_size
+
+    return build_v2(n_recs, rec_size, new_table_size, records), header, True
+
+
+def migrate_bytes(data: bytes, arch: str, table_size: int | None = None,
+                  target: str = "v3") -> tuple[bytes, EdbHeader, bool]:
+    if target not in ("v2", "v3"):
+        raise ValueError(f"unknown target format: {target!r} (expected 'v2' or 'v3')")
     header = read_header(data, arch)
+    if target == "v2":
+        return _migrate_to_v2(data, header, table_size)
+
     if header.version == V3_VERSION:
         return data, header, False
 
     rec_size = header.rec_size
     n_recs = header.n_recs
-    record_bytes = n_recs * rec_size
-    records = data[header.header_size : header.header_size + record_bytes]
-    if len(records) != record_bytes:
-        raise ValueError("missing record bytes in source file")
+    records = _extract_records(data, header)
 
     slot_stride = 1 + rec_size + 2
     data_offset = V3_HEADER_SPAN
@@ -225,13 +317,13 @@ def _atomic_write(output_path: Path, data: bytes) -> None:
 
 
 def migrate_file(input_path: Path, output_path: Path, arch: str, force: bool,
-                 table_size: int | None = None) -> int:
+                 table_size: int | None = None, target: str = "v3") -> int:
     data = input_path.read_bytes()
-    output, header, changed = migrate_bytes(data, arch, table_size)
+    output, header, changed = migrate_bytes(data, arch, table_size, target)
     in_place = input_path.resolve() == output_path.resolve()
 
     if not changed:
-        print(f"{input_path}: already v3 format")
+        print(f"{input_path}: already {target} format")
         if not in_place:
             if output_path.exists() and not force:
                 raise FileExistsError(f"refusing to overwrite {output_path} without --force")
@@ -243,20 +335,22 @@ def migrate_file(input_path: Path, output_path: Path, arch: str, force: bool,
 
     _atomic_write(output_path, output)
     print(
-        f"migrated v{header.version} {input_path} -> v3 {output_path} "
+        f"migrated v{header.version} {input_path} -> {target} {output_path} "
         f"(records={header.n_recs}, rec_size={header.rec_size})"
     )
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Migrate legacy EDB v1/v2 files to the v3 format")
+    parser = argparse.ArgumentParser(description="Convert legacy EDB v1/v2 files to v2 or v3")
     parser.add_argument("input", type=Path, help="source .db file")
     parser.add_argument("output", type=Path, help="destination .db file")
+    parser.add_argument("--to", dest="target", choices=("v2", "v3"), default="v3",
+                        help="destination format (default: v3)")
     parser.add_argument("--arch", choices=("avr", "esp32", "auto"), default="auto",
                         help="legacy v1 header layout (default: auto)")
     parser.add_argument("--table-size", type=int, default=None,
-                        help="override the v3 table_size in bytes (default: preserve capacity)")
+                        help="override the output table_size in bytes (default: preserve capacity)")
     parser.add_argument("--force", action="store_true", help="overwrite output file if it exists")
     return parser
 
@@ -265,7 +359,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        return migrate_file(args.input, args.output, args.arch, args.force, args.table_size)
+        return migrate_file(args.input, args.output, args.arch, args.force,
+                            args.table_size, args.target)
     except (ValueError, FileExistsError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
