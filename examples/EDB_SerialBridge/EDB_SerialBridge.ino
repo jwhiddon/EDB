@@ -452,7 +452,9 @@ static void handleCommand(const char *raw) {
 
 void setup() {
   Serial.begin(115200);
-  pinMode(LED_BUILTIN, OUTPUT);
+#ifdef LED_BUILTIN
+  pinMode(LED_BUILTIN, OUTPUT);   // not every core defines LED_BUILTIN (e.g. generic esp32:esp32)
+#endif
   if (!SD.begin(SD_PIN)) {
     sd_ok = false;
     return;
