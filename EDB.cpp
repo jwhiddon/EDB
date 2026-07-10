@@ -1,50 +1,87 @@
 /*
   EDB.cpp
   Extended Database Library for Arduino
-  http://www.arduino.cc/playground/Code/ExtendedDatabaseLibrary
+  Release 1.0.7 — drop-in safety fixes for 1.0.6 users
 */
 
-// Thanks to robtillaar (http://forum.arduino.cc/index.php/topic,130228.0.html) for the next line...
 #include "Arduino.h"
 #include "EDB.h"
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
 
-/**************************************************/
-// private functions
+static bool edbComputeShiftBlockSize(unsigned long record_count, unsigned int rec_size, unsigned int& block_size)
+{
+  if (record_count == 0 || rec_size == 0) return false;
+  unsigned long bytes = record_count * (unsigned long)rec_size;
+  if (bytes > (unsigned long)UINT_MAX) return false;
+  block_size = (unsigned int)bytes;
+  return true;
+}
 
-// low level byte write
+#ifdef EDB_TEST
+static bool _edb_malloc_fail = false;
+void EDB::setMallocFail(bool fail) { _edb_malloc_fail = fail; }
+#endif
+
 void EDB::edbWrite(unsigned long ee, const byte* p, unsigned int recsize)
-{	if(!_write_buffer){
-		for (unsigned int i = 0; i < recsize; i++)
-		_write_byte(ee++, *p++);
-	}else{
-		_write_buffer(ee,p,recsize);
-	}
+{
+  if (!_write_buffer) {
+    for (unsigned int i = 0; i < recsize; i++)
+      _write_byte(ee++, *p++);
+  } else {
+    _write_buffer(ee, p, recsize);
+  }
 }
 
-// low level byte read
 void EDB::edbRead(unsigned long ee, byte* p, unsigned int recsize)
-{	if(!_read_buffer){
-		for (unsigned i = 0; i < recsize; i++)
-		*p++ = _read_byte(ee++);
-	}else{
-		_read_buffer(ee,p,recsize);
-	}
+{
+  if (!_read_buffer) {
+    for (unsigned int i = 0; i < recsize; i++)
+      *p++ = _read_byte(ee++);
+  } else {
+    _read_buffer(ee, p, recsize);
+  }
 }
 
-// writes EDB_Header
+void* EDB::edbMalloc(unsigned int size)
+{
+#ifdef EDB_TEST
+  if (_edb_malloc_fail) return NULL;
+#endif
+  return malloc(size);
+}
+
 void EDB::writeHead()
 {
-  edbWrite(EDB_head_ptr, EDB_REC EDB_head, (unsigned long)sizeof(EDB_Header));
+  edbWrite(EDB_head_ptr, EDB_REC EDB_head, (unsigned int)sizeof(EDB_Header));
 }
 
-// reads EDB_Header
-void EDB::readHead()
+EDB_Status EDB::readHead()
 {
-  edbRead(EDB_head_ptr, EDB_REC EDB_head, (unsigned long)sizeof(EDB_Header));
+  edbRead(EDB_head_ptr, EDB_REC EDB_head, (unsigned int)sizeof(EDB_Header));
+  return validateHeader();
 }
 
-/**************************************************/
-// public functions
+EDB_Status EDB::validateHeader() const
+{
+  if (EDB_head.flag != EDB_FLAG) return EDB_ERROR;
+  if (EDB_head.rec_size == 0) return EDB_ERROR;
+  if (EDB_head.table_size < sizeof(EDB_Header)) return EDB_ERROR;
+  if ((EDB_head.table_size - sizeof(EDB_Header)) < EDB_head.rec_size) return EDB_ERROR;
+  if (EDB_head.n_recs > limit()) return EDB_ERROR;
+  return EDB_OK;
+}
+
+bool EDB::isValidRecno(unsigned long recno) const
+{
+  return recno >= 1 && recno <= EDB_head.n_recs;
+}
+
+unsigned long EDB::recordOffset(unsigned long recno) const
+{
+  return EDB_table_ptr + ((recno - 1) * EDB_head.rec_size);
+}
 
 EDB::EDB(EDB_Write_Handler *w, EDB_Read_Handler *r)
 {
@@ -62,9 +99,12 @@ EDB::EDB(EDB_Write_Buffer *w, EDB_Read_Buffer *r)
   _read_buffer = r;
 }
 
-// creates a new table and sets header values
 EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned int recsize)
 {
+  if (recsize == 0) return EDB_ERROR;
+  if (tablesize < sizeof(EDB_Header)) return EDB_ERROR;
+  if ((tablesize - sizeof(EDB_Header)) < recsize) return EDB_ERROR;
+
   EDB_head_ptr = head_ptr;
   EDB_table_ptr = sizeof(EDB_Header) + EDB_head_ptr;
   EDB_head.flag = EDB_FLAG;
@@ -72,113 +112,145 @@ EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned
   EDB_head.rec_size = recsize;
   EDB_head.table_size = tablesize;
   writeHead();
-  if (EDB_head.flag == EDB_FLAG){
-    return EDB_OK;
-  } else {
-    return EDB_ERROR;
-  }
+
+  EDB_Header verify;
+  edbRead(EDB_head_ptr, EDB_REC verify, (unsigned int)sizeof(EDB_Header));
+  if (verify.flag != EDB_FLAG) return EDB_ERROR;
+  if (verify.n_recs != 0 || verify.rec_size != recsize || verify.table_size != tablesize) return EDB_ERROR;
+
+  return EDB_OK;
 }
 
-// reads an existing edb header at a given recno and sets header values
 EDB_Status EDB::open(unsigned long head_ptr)
 {
   EDB_head_ptr = head_ptr;
-  // Thanks to Steve Kelly for the next line...
-  EDB_table_ptr = sizeof(EDB_Header) + EDB_head_ptr; // this line was originally missing in the downloaded library
-  readHead();
-  return EDB_OK;
+  EDB_table_ptr = sizeof(EDB_Header) + EDB_head_ptr;
+  return readHead();
 }
 
-// writes a record to a given recno
 EDB_Status EDB::writeRec(unsigned long recno, const EDB_Rec rec)
 {
-  edbWrite(EDB_table_ptr + ((recno - 1) * EDB_head.rec_size), rec, EDB_head.rec_size);
+  edbWrite(recordOffset(recno), rec, EDB_head.rec_size);
   return EDB_OK;
 }
 
-// reads a record from a given recno
 EDB_Status EDB::readRec(unsigned long recno, EDB_Rec rec)
 {
-  if (recno < 1 || recno > EDB_head.n_recs) return EDB_OUT_OF_RANGE;
-  edbRead(EDB_table_ptr + ((recno - 1) * EDB_head.rec_size), rec, EDB_head.rec_size);
+  if (!isValidRecno(recno)) return EDB_OUT_OF_RANGE;
+  edbRead(recordOffset(recno), rec, EDB_head.rec_size);
   return EDB_OK;
 }
 
-// Deletes a record at a given recno
-// Becomes more inefficient as you the record set increases and you delete records
-// early in the record queue.
 EDB_Status EDB::deleteRec(unsigned long recno)
 {
-  if (recno < 0 || recno > EDB_head.n_recs) return  EDB_OUT_OF_RANGE;
-  EDB_Rec rec = (byte*)malloc(EDB_head.rec_size);
-  for (unsigned long i = recno + 1; i <= EDB_head.n_recs; i++)
-  {
-    readRec(i, rec);
-    writeRec(i - 1, rec);
+  if (!isValidRecno(recno)) return EDB_OUT_OF_RANGE;
+
+  unsigned long tail = EDB_head.n_recs - recno;
+  if (tail > 0) {
+    bool shifted = false;
+    if (_read_buffer && _write_buffer) {
+      unsigned int block_size = 0;
+      if (edbComputeShiftBlockSize(tail, EDB_head.rec_size, block_size)) {
+        EDB_Rec buf = (byte*)edbMalloc(block_size);
+        if (!buf) return EDB_ERROR;
+        _read_buffer(recordOffset(recno + 1), buf, block_size);
+        _write_buffer(recordOffset(recno), buf, block_size);
+        free(buf);
+        shifted = true;
+      }
+    }
+    if (!shifted) {
+      EDB_Rec rec = (byte*)edbMalloc(EDB_head.rec_size);
+      if (!rec) return EDB_ERROR;
+      for (unsigned long i = recno + 1; i <= EDB_head.n_recs; i++) {
+        EDB_Status status = readRec(i, rec);
+        if (status != EDB_OK) { free(rec); return status; }
+        status = writeRec(i - 1, rec);
+        if (status != EDB_OK) { free(rec); return status; }
+      }
+      free(rec);
+    }
   }
-  free(rec);
+
   EDB_head.n_recs--;
   writeHead();
   return EDB_OK;
 }
 
-// Inserts a record at a given recno, increasing all following records' recno by 1.
-// This function becomes increasingly inefficient as it's currently implemented and
-// is the slowest way to add a record.
-EDB_Status EDB::insertRec(unsigned long recno, EDB_Rec rec)
+EDB_Status EDB::insertRec(unsigned long recno, const EDB_Rec rec)
 {
   if (count() == limit()) return EDB_TABLE_FULL;
-  if (count() > 0 && (recno < 0 || recno > EDB_head.n_recs)) return EDB_OUT_OF_RANGE;
-  if (count() == 0 && recno == 1) return appendRec(rec);
-
-  EDB_Rec buf = (byte*)malloc(EDB_head.rec_size);
-  for (unsigned long i = EDB_head.n_recs; i >= recno; i--)
-  {
-    readRec(i, buf);
-    writeRec(i + 1, buf);
+  if (count() == 0) {
+    if (recno != 1) return EDB_OUT_OF_RANGE;
+    return appendRec((EDB_Rec)rec);
   }
-  free(buf);
-  writeRec(recno, rec);
+  if (recno < 1 || recno > EDB_head.n_recs) return EDB_OUT_OF_RANGE;
+
+  unsigned long tail = EDB_head.n_recs - recno + 1;
+  bool shifted = false;
+  if (_read_buffer && _write_buffer) {
+    unsigned int block_size = 0;
+    if (edbComputeShiftBlockSize(tail, EDB_head.rec_size, block_size)) {
+      EDB_Rec buf = (byte*)edbMalloc(block_size);
+      if (!buf) return EDB_ERROR;
+      _read_buffer(recordOffset(recno), buf, block_size);
+      _write_buffer(recordOffset(recno + 1), buf, block_size);
+      free(buf);
+      shifted = true;
+    }
+  }
+  if (!shifted) {
+    EDB_Rec buf = (byte*)edbMalloc(EDB_head.rec_size);
+    if (!buf) return EDB_ERROR;
+    for (unsigned long i = EDB_head.n_recs; i >= recno; i--) {
+      EDB_Status status = readRec(i, buf);
+      if (status != EDB_OK) { free(buf); return status; }
+      status = writeRec(i + 1, buf);
+      if (status != EDB_OK) { free(buf); return status; }
+    }
+    free(buf);
+  }
+
+  EDB_Status status = writeRec(recno, rec);
+  if (status != EDB_OK) return status;
   EDB_head.n_recs++;
   writeHead();
   return EDB_OK;
 }
 
-// Updates a record at a given recno
-EDB_Status EDB::updateRec(unsigned long recno, EDB_Rec rec)
+EDB_Status EDB::updateRec(unsigned long recno, const EDB_Rec rec)
 {
-  if (recno < 0 || recno > EDB_head.n_recs) return EDB_OUT_OF_RANGE;
-  writeRec(recno, rec);
-  return EDB_OK;
+  if (!isValidRecno(recno)) return EDB_OUT_OF_RANGE;
+  return writeRec(recno, rec);
 }
 
-// Adds a record to the end of the record set.
-// This is the fastest way to add a record.
 EDB_Status EDB::appendRec(EDB_Rec rec)
 {
   if (EDB_head.n_recs + 1 > limit()) return EDB_TABLE_FULL;
   EDB_head.n_recs++;
-  writeRec(EDB_head.n_recs,rec);
+  EDB_Status status = writeRec(EDB_head.n_recs, rec);
+  if (status != EDB_OK) {
+    EDB_head.n_recs--;
+    return status;
+  }
   writeHead();
   return EDB_OK;
 }
 
-// returns the number of queued items
 unsigned long EDB::count()
 {
   return EDB_head.n_recs;
 }
 
-// returns the maximum number of items that will fit into the queue
-unsigned long EDB::limit()
+unsigned long EDB::limit() const
 {
-   // Thanks to oleh.sok...@gmail.com for the next line
-   return (EDB_head.table_size - sizeof(EDB_Header)) / EDB_head.rec_size;
+  if (EDB_head.rec_size == 0) return 0;
+  if (EDB_head.table_size < sizeof(EDB_Header)) return 0;
+  return (EDB_head.table_size - sizeof(EDB_Header)) / EDB_head.rec_size;
 }
 
-// truncates the queue by resetting the internal pointers
 void EDB::clear()
 {
-  readHead();
+  if (readHead() != EDB_OK) return;
   create(EDB_head_ptr, EDB_head.table_size, EDB_head.rec_size);
 }

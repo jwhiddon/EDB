@@ -1,13 +1,30 @@
 /*
   EDB.h
   Extended Database Library for Arduino
-  http://www.arduino.cc/playground/Code/ExtendedDatabaseLibrary
+  Release 1.0.7 — drop-in safety fixes for 1.0.6 users
 */
 
 #ifndef EDB_PROM
 #define EDB_PROM
-#define EDB_FLAG B11011011
+#define EDB_FLAG 0xDB
 
+#include <stdint.h>
+
+#if defined(EDB_TEST)
+#if defined(__GNUC__)
+#define EDB_PACKED __attribute__((packed))
+#else
+#define EDB_PACKED
+#endif
+
+struct EDB_PACKED EDB_Header
+{
+  byte flag;
+  uint32_t n_recs;
+  uint16_t rec_size;
+  uint32_t table_size;
+};
+#else
 struct EDB_Header
 {
   byte flag;
@@ -15,13 +32,14 @@ struct EDB_Header
   unsigned int rec_size;
   unsigned long table_size;
 };
+#endif
 
 enum EDB_Status {
-                          EDB_OK,
-                          EDB_ERROR,
-                          EDB_OUT_OF_RANGE,
-                          EDB_TABLE_FULL
-                        };
+  EDB_OK,
+  EDB_ERROR,
+  EDB_OUT_OF_RANGE,
+  EDB_TABLE_FULL
+};
 
 typedef byte* EDB_Rec;
 
@@ -42,9 +60,12 @@ class EDB {
     EDB_Status insertRec(unsigned long, const EDB_Rec);
     EDB_Status updateRec(unsigned long, const EDB_Rec);
     EDB_Status appendRec(EDB_Rec rec);
-    unsigned long limit();
+    unsigned long limit() const;
     unsigned long count();
     void clear();
+#ifdef EDB_TEST
+    static void setMallocFail(bool fail);
+#endif
   private:
     unsigned long EDB_head_ptr;
     unsigned long EDB_table_ptr;
@@ -56,8 +77,12 @@ class EDB {
     void edbWrite(unsigned long ee, const byte* p, unsigned int);
     void edbRead(unsigned long ee, byte* p, unsigned int);
     void writeHead();
-    void readHead();
+    EDB_Status readHead();
+    EDB_Status validateHeader() const;
+    bool isValidRecno(unsigned long recno) const;
+    unsigned long recordOffset(unsigned long recno) const;
     EDB_Status writeRec(unsigned long, const EDB_Rec);
+    void* edbMalloc(unsigned int size);
 };
 
 extern EDB edb;
