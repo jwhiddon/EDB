@@ -1,71 +1,43 @@
-"""Shared v3 on-disk helpers for host tools (check, vacuum, migrate).
+"""Offline whole-file v3 operations for host tools (check, vacuum, grow).
 
-Byte-compatible with EDB.cpp / docs/FORMAT.md.
+The low-level format primitives (constants, CRCs, Header, header pack/parse, slot framing) live in
+[edb_v3_format.py](edb_v3_format.py) — the single Python source of truth, shared with the gateway.
+This module keeps only the higher-level operations and re-exports the primitives so existing
+`from edb_v3_io import ...` callers keep working. Byte-compatible with EDB.cpp / docs/FORMAT.md.
 """
 
 from __future__ import annotations
 
-import struct
 from dataclasses import dataclass
 from typing import Callable
 
-FLAG = 0xDB
-VERSION = 3
-HEADER_COPY_SIZE = 48
-HEADER_SPAN = 2 * HEADER_COPY_SIZE
-SLOT_LIVE = 0xA5
-SLOT_TOMBSTONE = 0x5A
-FREE_NONE = 0xFFFFFFFF
+from edb_v3_format import (
+    FREE_NONE,
+    HDR_ENCRYPTED,  # noqa: F401  (re-exported for callers)
+    HDR_RING,
+    HDR_STABLE_IDS,
+    HEADER_COPY_SIZE,
+    HEADER_SPAN,
+    FLAG,
+    SLOT_LIVE,
+    SLOT_TOMBSTONE,
+    VERSION,
+    Header,
+    crc16_ccitt_edb,  # noqa: F401  (re-exported)
+    crc32_edb,  # noqa: F401  (re-exported)
+    pack_header,
+    publish,
+    read_slot_raw,
+    record_id_from_payload,
+    select_active,
+    slot_offset,
+    write_slot,
+)
 
-HDR_ENCRYPTED = 0x0001
-HDR_STABLE_IDS = 0x0002
-HDR_RING = 0x0004
-
-
-def crc32_edb(data: bytes) -> int:
-    crc = 0xFFFFFFFF
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0xEDB88320 if (crc & 1) else (crc >> 1)
-    return crc ^ 0xFFFFFFFF
-
-
-def crc16_ccitt_edb(data: bytes) -> int:
-    crc = 0xFFFF
-    for b in data:
-        crc ^= (b << 8)
-        crc &= 0xFFFF
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
-    return crc
-
-
-@dataclass
-class Header:
-    flags: int
-    seq: int
-    n_slots: int
-    n_live: int
-    rec_size: int
-    slot_stride: int
-    table_size: int
-    free_head: int
-    data_offset: int
-    next_record_id: int = 1
-    ring_head: int = 0
-    reserved: bytes = b"\x00" * 14
-
-    def max_slots(self) -> int:
-        if self.slot_stride == 0 or self.table_size < self.data_offset:
-            return 0
-        return (self.table_size - self.data_offset) // self.slot_stride
-
-    def stable_ids(self) -> bool:
-        return bool(self.flags & HDR_STABLE_IDS)
-
-    def ring_mode(self) -> bool:
-        return bool(self.flags & HDR_RING)
+# Backward-compatible private aliases kept for existing tools/tests importing them from edb_v3_io.
+_pack_header = pack_header
+_write_slot = write_slot
+_publish = publish
 
 
 @dataclass
@@ -81,55 +53,10 @@ class RemapEntry:
     new_recno: int
 
 
-def _parse_header_copy(buf: bytes) -> Header | None:
-    if len(buf) < HEADER_COPY_SIZE or buf[0] != FLAG or buf[1] != VERSION:
-        return None
-    if struct.unpack_from("<I", buf, 44)[0] != crc32_edb(bytes(buf[0:44])):
-        return None
-    reserved = bytes(buf[30:44])
-    next_record_id = struct.unpack_from("<I", reserved, 0)[0] if len(reserved) >= 4 else 1
-    ring_head = struct.unpack_from("<I", reserved, 4)[0] if len(reserved) >= 8 else 0
-    h = Header(
-        flags=struct.unpack_from("<H", buf, 2)[0],
-        seq=struct.unpack_from("<I", buf, 4)[0],
-        n_slots=struct.unpack_from("<I", buf, 8)[0],
-        n_live=struct.unpack_from("<I", buf, 12)[0],
-        rec_size=struct.unpack_from("<H", buf, 16)[0],
-        slot_stride=struct.unpack_from("<H", buf, 18)[0],
-        table_size=struct.unpack_from("<I", buf, 20)[0],
-        free_head=struct.unpack_from("<I", buf, 24)[0],
-        data_offset=struct.unpack_from("<H", buf, 28)[0],
-        next_record_id=next_record_id,
-        ring_head=ring_head,
-        reserved=reserved,
-    )
-    if h.rec_size == 0 or h.slot_stride < 1 + h.rec_size + 2:
-        return None
-    if h.data_offset < HEADER_COPY_SIZE or h.table_size < h.data_offset + h.slot_stride:
-        return None
-    if h.n_slots > h.max_slots() or h.n_live > h.n_slots:
-        return None
-    if h.free_head != FREE_NONE and h.free_head >= h.n_slots:
-        return None
-    return h
-
-
 def active_header(data: bytes, head_ptr: int) -> tuple[Header, int] | None:
-    off0 = head_ptr
-    off1 = head_ptr + HEADER_COPY_SIZE
-    h0 = _parse_header_copy(data[off0 : off0 + HEADER_COPY_SIZE])
-    h1 = _parse_header_copy(data[off1 : off1 + HEADER_COPY_SIZE])
-    if h0 is None and h1 is None:
-        if len(data) >= head_ptr + 2 and data[head_ptr] == FLAG and data[head_ptr + 1] != VERSION:
-            return None  # legacy
-        return None
-    if h0 is not None and (h1 is None or h0.seq >= h1.seq):
-        return h0, 0
-    return h1, 1
-
-
-def slot_offset(head_ptr: int, h: Header, idx: int) -> int:
-    return head_ptr + h.data_offset + idx * h.slot_stride
+    """Return (header, active_copy) for the newest valid header copy, or None."""
+    h, copy, _is_legacy = select_active(data, head_ptr)
+    return None if h is None else (h, copy)
 
 
 def read_slot_status(data: bytes, head_ptr: int, h: Header, idx: int) -> int:
@@ -137,67 +64,19 @@ def read_slot_status(data: bytes, head_ptr: int, h: Header, idx: int) -> int:
 
 
 def read_slot_payload(data: bytes, head_ptr: int, h: Header, idx: int) -> tuple[str, bytes]:
-    off = slot_offset(head_ptr, h, idx)
-    if off + h.slot_stride > len(data):
+    """Map a slot to this module's status vocabulary:
+    'truncated' | 'tombstone' | 'empty' | 'corrupt' | 'live'."""
+    res = read_slot_raw(data, head_ptr, h, idx)
+    if res is None:
         return "truncated", b""
-    status = data[off]
+    status, payload, crc_ok = res
     if status == SLOT_TOMBSTONE:
         return "tombstone", b""
     if status != SLOT_LIVE:
         return "empty", b""
-    payload = bytes(data[off + 1 : off + 1 + h.rec_size])
-    stored = struct.unpack_from("<H", data, off + 1 + h.rec_size)[0]
-    if crc16_ccitt_edb(bytes([SLOT_LIVE]) + payload) != stored:
+    if not crc_ok:
         return "corrupt", payload
     return "live", payload
-
-
-def record_id_from_payload(payload: bytes) -> int:
-    if len(payload) < 4:
-        return 0
-    return struct.unpack_from("<I", payload, 0)[0]
-
-
-def _pack_header(h: Header) -> bytes:
-    buf = bytearray(HEADER_COPY_SIZE)
-    buf[0] = FLAG
-    buf[1] = VERSION
-    struct.pack_into("<H", buf, 2, h.flags)
-    struct.pack_into("<I", buf, 4, h.seq)
-    struct.pack_into("<I", buf, 8, h.n_slots)
-    struct.pack_into("<I", buf, 12, h.n_live)
-    struct.pack_into("<H", buf, 16, h.rec_size)
-    struct.pack_into("<H", buf, 18, h.slot_stride)
-    struct.pack_into("<I", buf, 20, h.table_size)
-    struct.pack_into("<I", buf, 24, h.free_head)
-    struct.pack_into("<H", buf, 28, h.data_offset)
-    reserved = bytearray(h.reserved[:14].ljust(14, b"\x00"))
-    struct.pack_into("<I", reserved, 0, h.next_record_id)
-    struct.pack_into("<I", reserved, 4, h.ring_head)
-    buf[30:44] = reserved
-    struct.pack_into("<I", buf, 44, crc32_edb(bytes(buf[0:44])))
-    return bytes(buf)
-
-
-def _write_slot(data: bytearray, head_ptr: int, h: Header, idx: int, payload: bytes) -> None:
-    off = slot_offset(head_ptr, h, idx)
-    need = off + h.slot_stride
-    if len(data) < need:
-        data.extend(b"\x00" * (need - len(data)))
-    crc = crc16_ccitt_edb(bytes([SLOT_LIVE]) + payload)
-    data[off + 1 : off + 1 + h.rec_size] = payload[: h.rec_size].ljust(h.rec_size, b"\x00")
-    struct.pack_into("<H", data, off + 1 + h.rec_size, crc)
-    data[off] = SLOT_LIVE
-
-
-def _publish(data: bytearray, head_ptr: int, h: Header, active_copy: int) -> int:
-    target = 1 - active_copy
-    h.seq += 1
-    off = head_ptr + target * HEADER_COPY_SIZE
-    if len(data) < off + HEADER_COPY_SIZE:
-        data.extend(b"\x00" * (off + HEADER_COPY_SIZE - len(data)))
-    data[off : off + HEADER_COPY_SIZE] = _pack_header(h)
-    return target
 
 
 def check_table(data: bytes, head_ptr: int = 0) -> tuple[list[CheckIssue], Header | None]:

@@ -1,25 +1,60 @@
-"""Host-side reader/writer for the EDB v3 on-disk format.
+"""Host-side reader/writer for the EDB v3 on-disk format (the gateway's live file handle).
 
-Byte-compatible with EDB.cpp so a file written here opens on the device and vice versa:
-redundant CRC32 dual header, framed slots (status + CRC16), tombstone delete, intrusive
-free-list. See docs/FORMAT.md.
+The format primitives (constants, CRCs, Header, header pack/parse, slot framing) come from the
+shared, single-source module `tools/edb_v3_format.py`, which mirrors EDB.cpp. This file adds the
+gateway's `EdbV3File` handle and status-string vocabulary on top. A file written here opens on the
+device and vice versa. See docs/FORMAT.md.
 """
 
 from __future__ import annotations
 
 import os
 import struct
-from dataclasses import dataclass
+import sys
+from pathlib import Path
 
-FLAG = 0xDB
-VERSION = 3
-HEADER_COPY_SIZE = 48
-HEADER_SPAN = 2 * HEADER_COPY_SIZE
-SLOT_LIVE = 0xA5
-SLOT_TOMBSTONE = 0x5A
-FREE_NONE = 0xFFFFFFFF
+try:
+    from edb_v3_format import (
+        FREE_NONE,
+        HEADER_COPY_SIZE,
+        HEADER_SPAN,
+        SLOT_LIVE,
+        SLOT_TOMBSTONE,
+        Header,
+        crc16_ccitt_edb,  # noqa: F401  (re-exported for callers/tests)
+        crc32_edb,  # noqa: F401  (re-exported for callers/tests)
+        pack_header,
+        publish,
+        read_slot_raw,
+        select_active,
+        slot_offset,
+        write_slot,
+    )
+except ImportError:
+    # The shared module lives in the repo's tools/ dir. The gateway runs from within the repo
+    # (editable install / tests), so locate it relative to this file: services/edb-gateway/
+    # edb_gateway/edb_v3.py -> parents[3] is the repo root.
+    _TOOLS = Path(__file__).resolve().parents[3] / "tools"
+    if str(_TOOLS) not in sys.path:
+        sys.path.insert(0, str(_TOOLS))
+    from edb_v3_format import (  # noqa: E402
+        FREE_NONE,
+        HEADER_COPY_SIZE,
+        HEADER_SPAN,
+        SLOT_LIVE,
+        SLOT_TOMBSTONE,
+        Header,
+        crc16_ccitt_edb,  # noqa: F401
+        crc32_edb,  # noqa: F401
+        pack_header,
+        publish,
+        read_slot_raw,
+        select_active,
+        slot_offset,
+        write_slot,
+    )
 
-# Status strings (match EdbStatus values).
+# Status strings (match EdbStatus values). Gateway-specific REST vocabulary.
 OK = "EDB_OK"
 ERROR = "EDB_ERROR"
 OUT_OF_RANGE = "EDB_OUT_OF_RANGE"
@@ -27,87 +62,6 @@ TABLE_FULL = "EDB_TABLE_FULL"
 DELETED = "EDB_DELETED"
 CORRUPT = "EDB_CORRUPT"
 NEEDS_MIGRATION = "EDB_NEEDS_MIGRATION"
-
-
-def crc32_edb(data: bytes) -> int:
-    crc = 0xFFFFFFFF
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0xEDB88320 if (crc & 1) else (crc >> 1)
-    return crc ^ 0xFFFFFFFF
-
-
-def crc16_ccitt_edb(data: bytes) -> int:
-    crc = 0xFFFF
-    for b in data:
-        crc ^= (b << 8)
-        crc &= 0xFFFF
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
-    return crc
-
-
-@dataclass
-class Header:
-    flags: int
-    seq: int
-    n_slots: int
-    n_live: int
-    rec_size: int
-    slot_stride: int
-    table_size: int
-    free_head: int
-    data_offset: int
-
-    def max_slots(self) -> int:
-        if self.slot_stride == 0 or self.table_size < self.data_offset:
-            return 0
-        return (self.table_size - self.data_offset) // self.slot_stride
-
-
-def _pack_header(h: Header) -> bytes:
-    buf = bytearray(HEADER_COPY_SIZE)
-    buf[0] = FLAG
-    buf[1] = VERSION
-    struct.pack_into("<H", buf, 2, h.flags)
-    struct.pack_into("<I", buf, 4, h.seq)
-    struct.pack_into("<I", buf, 8, h.n_slots)
-    struct.pack_into("<I", buf, 12, h.n_live)
-    struct.pack_into("<H", buf, 16, h.rec_size)
-    struct.pack_into("<H", buf, 18, h.slot_stride)
-    struct.pack_into("<I", buf, 20, h.table_size)
-    struct.pack_into("<I", buf, 24, h.free_head)
-    struct.pack_into("<H", buf, 28, h.data_offset)
-    struct.pack_into("<I", buf, 44, crc32_edb(bytes(buf[0:44])))
-    return bytes(buf)
-
-
-def _parse_header(buf: bytes) -> Header | None:
-    if len(buf) < HEADER_COPY_SIZE or buf[0] != FLAG or buf[1] != VERSION:
-        return None
-    if struct.unpack_from("<I", buf, 44)[0] != crc32_edb(bytes(buf[0:44])):
-        return None
-    h = Header(
-        flags=struct.unpack_from("<H", buf, 2)[0],
-        seq=struct.unpack_from("<I", buf, 4)[0],
-        n_slots=struct.unpack_from("<I", buf, 8)[0],
-        n_live=struct.unpack_from("<I", buf, 12)[0],
-        rec_size=struct.unpack_from("<H", buf, 16)[0],
-        slot_stride=struct.unpack_from("<H", buf, 18)[0],
-        table_size=struct.unpack_from("<I", buf, 20)[0],
-        free_head=struct.unpack_from("<I", buf, 24)[0],
-        data_offset=struct.unpack_from("<H", buf, 28)[0],
-    )
-    if h.rec_size == 0 or h.slot_stride < 1 + h.rec_size + 2:
-        return None
-    if h.data_offset < HEADER_COPY_SIZE or h.table_size < h.data_offset + h.slot_stride:
-        return None
-    if h.n_slots > h.max_slots() or h.n_live > h.n_slots:
-        return None
-    if h.free_head != FREE_NONE and h.free_head >= h.n_slots:
-        return None
-    return h
 
 
 class OpenError(Exception):
@@ -137,54 +91,36 @@ class EdbV3File:
             fh.write(self.data)
         os.replace(tmp, self.path)
 
-    # ---- headers ----
-    def _read_copy(self, head_ptr: int, copy: int) -> Header | None:
-        off = head_ptr + copy * HEADER_COPY_SIZE
-        return _parse_header(bytes(self.data[off : off + HEADER_COPY_SIZE]))
-
+    # ---- headers (delegate to the shared format module) ----
     def _active(self, head_ptr: int) -> tuple[Header, int]:
         """Return (header, active_copy). Raises OpenError with a status on failure."""
-        h0 = self._read_copy(head_ptr, 0)
-        h1 = self._read_copy(head_ptr, 1)
-        if h0 is None and h1 is None:
-            if len(self.data) >= head_ptr + 2 and self.data[head_ptr] == FLAG and self.data[head_ptr + 1] != VERSION:
-                raise OpenError(NEEDS_MIGRATION)
-            raise OpenError(ERROR)
-        if h0 is not None and (h1 is None or h0.seq >= h1.seq):
-            return h0, 0
-        return h1, 1
+        h, copy, is_legacy = select_active(self.data, head_ptr)
+        if h is None:
+            raise OpenError(NEEDS_MIGRATION if is_legacy else ERROR)
+        return h, copy
 
     def _publish(self, head_ptr: int, header: Header, active_copy: int) -> None:
-        target = 1 - active_copy
-        header.seq += 1
-        off = head_ptr + target * HEADER_COPY_SIZE
-        self._ensure(off + HEADER_COPY_SIZE)
-        self.data[off : off + HEADER_COPY_SIZE] = _pack_header(header)
+        publish(self.data, head_ptr, header, active_copy)
 
-    # ---- slots ----
+    # ---- slots (delegate to the shared format module) ----
     def _slot_off(self, head_ptr: int, h: Header, idx: int) -> int:
-        return head_ptr + h.data_offset + idx * h.slot_stride
+        return slot_offset(head_ptr, h, idx)
 
     def _read_slot(self, head_ptr: int, h: Header, idx: int) -> tuple[str, bytes]:
-        off = self._slot_off(head_ptr, h, idx)
-        status = self.data[off]
+        res = read_slot_raw(self.data, head_ptr, h, idx)
+        if res is None:
+            return OUT_OF_RANGE, b""
+        status, payload, crc_ok = res
         if status == SLOT_TOMBSTONE:
             return DELETED, b""
         if status != SLOT_LIVE:
             return OUT_OF_RANGE, b""
-        payload = bytes(self.data[off + 1 : off + 1 + h.rec_size])
-        stored = struct.unpack_from("<H", self.data, off + 1 + h.rec_size)[0]
-        if crc16_ccitt_edb(bytes([SLOT_LIVE]) + payload) != stored:
+        if not crc_ok:
             return CORRUPT, b""
         return OK, payload
 
     def _write_slot(self, head_ptr: int, h: Header, idx: int, payload: bytes) -> None:
-        off = self._slot_off(head_ptr, h, idx)
-        self._ensure(off + h.slot_stride)
-        crc = crc16_ccitt_edb(bytes([SLOT_LIVE]) + payload)
-        self.data[off + 1 : off + 1 + h.rec_size] = payload
-        struct.pack_into("<H", self.data, off + 1 + h.rec_size, crc)
-        self.data[off] = SLOT_LIVE
+        write_slot(self.data, head_ptr, h, idx, payload)
 
     def _has_free_list(self, h: Header) -> bool:
         return h.rec_size >= 4
@@ -216,7 +152,7 @@ class EdbV3File:
             return ERROR
         h = Header(0, 1, 0, 0, rec_size, stride, table_size, FREE_NONE, HEADER_SPAN)
         self._ensure(head_ptr + table_size)
-        packed = _pack_header(h)
+        packed = pack_header(h)
         self.data[head_ptr : head_ptr + HEADER_COPY_SIZE] = packed
         self.data[head_ptr + HEADER_COPY_SIZE : head_ptr + HEADER_SPAN] = packed
         self._flush()
