@@ -40,6 +40,7 @@
 #define EDB_HDR_ENCRYPTED  0x0001  /* informational: records may be encrypted */
 #define EDB_HDR_STABLE_IDS 0x0002  /* payload[0..3] is a monotonic record_id; see recordId() */
 #define EDB_HDR_RING       0x0004  /* FIFO ring: append-only, overwrite oldest when full */
+#define EDB_HDR_BATCH      0x0008  /* a batch is in progress: counts are stale, reconcile on open */
 
 /* When EDB_HDR_STABLE_IDS is set, reserved[0..3] holds next_record_id (LE32). */
 #define EDB_STABLE_ID_OFFSET 0  /* byte offset within each record payload */
@@ -54,6 +55,14 @@
 /* Store the header twice for atomic, crash-safe updates (1) or once (0, discouraged). */
 #ifndef EDB_HEADER_REDUNDANT
 #define EDB_HEADER_REDUNDANT 1
+#endif
+
+/* On byte handlers, skip writes whose stored value is already correct (EEPROM.update semantics).
+   Costs one read per byte, but an EEPROM read (~1 us) is ~3000x cheaper than a write (~3.3 ms):
+   most of the 48-byte header republish is unchanged bytes. Never applied to buffer handlers,
+   where a block write is a single operation and byte-diffing would be slower. */
+#ifndef EDB_WRITE_IF_DIFFERENT
+#define EDB_WRITE_IF_DIFFERENT 1
 #endif
 
 #if defined(__GNUC__)
@@ -119,6 +128,13 @@ class EDB {
     unsigned long nextRec(unsigned long recno);
     bool isLive(unsigned long recno);
     EDB_Status compact();
+    /* Batch append: defer the header publish until endBatch(), so each appendRec costs only the
+       slot write. A crash mid-batch never corrupts the table -- unpublished appends are simply
+       reconciled (recovered) on the next open(). deleteRec/clear/compact are refused while a
+       batch is open, and ring tables cannot be batched. */
+    EDB_Status beginBatch();
+    EDB_Status endBatch();
+    bool batchActive() const;
     /* Fixed-capacity FIFO ring: append-only, overwrites oldest when full. No per-record delete. */
     EDB_Status enableRingMode();
     bool ringModeEnabled() const;
@@ -149,6 +165,7 @@ class EDB {
     EDB_Write_Buffer *_write_buffer;
     EDB_Read_Buffer *_read_buffer;
     EDB_Header EDB_head;
+    bool _batch;                      /* header publishing deferred until endBatch() */
 
     void edbWrite(unsigned long ee, const byte* p, unsigned int);
     void edbRead(unsigned long ee, byte* p, unsigned int);
@@ -156,6 +173,7 @@ class EDB {
 
     EDB_Status writeHead();                    /* publish header to the inactive copy (ping-pong) */
     EDB_Status readHead();                     /* load newest valid copy; detect legacy */
+    EDB_Status reconcileAfterBatch();          /* rebuild counts/free-list after an interrupted batch */
     bool loadHeaderCopy(unsigned int copy, EDB_Header& out) const;
 
     unsigned long slotOffset(unsigned long index) const;   /* index is 0-based */

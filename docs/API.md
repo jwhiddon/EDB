@@ -131,6 +131,21 @@ Linear scan for a live record by stable id; sets `out_recno` to the current slot
 
 Returns the stored record size (bytes) of the open table.
 
+## `EDB_Status beginBatch()` / `EDB_Status endBatch()` / `bool batchActive() const`
+
+Defers the header publish so each `appendRec` costs only the slot write (~11 writes instead of 59):
+
+```cpp
+db.beginBatch();
+for (...) db.appendRec(EDB_REC rec);
+db.endBatch();
+```
+
+A crash mid-batch never corrupts the table: `beginBatch()` sets a dirty bit, and the next `open()`
+rebuilds `count()`, the slot high-water mark, and the free list from the slot region, then clears it
+— no records are lost. `deleteRec`, `clear`, and `compact` return `EDB_ERROR` while a batch is open,
+and ring tables cannot be batched. See [BENCHMARK.md](BENCHMARK.md).
+
 ## `EDB_Status clear()`
 
 Re-reads the header and recreates the table with the same `table_size` and `rec_size`, resetting
@@ -222,6 +237,7 @@ Optional compile-time flags (define before `#include` or via `-D` in build prope
 |------|---------|---------|
 | `EDB_VERIFY_ON_READ` | `1` | Verify each record's CRC on read; `0` = write-only integrity (min read CPU) |
 | `EDB_HEADER_REDUNDANT` | `1` | Store the header twice for atomic updates; `0` = single header (discouraged) |
+| `EDB_WRITE_IF_DIFFERENT` | `1` | On byte handlers, skip writes whose stored value is already correct (cuts `appendRec` from 59 to 18 writes). Set `0` for RAM/FRAM backends where reads cost as much as writes. See [BENCHMARK.md](BENCHMARK.md) |
 | `EDB_ENABLE_CRYPTO` | off | Include `EDB_Crypto.h` (ChaCha20-Poly1305 record encryption) |
 | `EDB_CRYPTO_DEVICE_AUTONOMOUS` | off | On-device wrapped-key extension helpers |
 | `EDB_NO_GLOBAL` | off | Omit legacy `extern EDB edb` |

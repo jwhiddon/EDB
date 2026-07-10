@@ -338,6 +338,96 @@ void test_buffer_delete_does_io() {
     TEST_ASSERT_TRUE(FakeStorage::instance().buffer_writes >= 1);
 }
 
+// EDB_WRITE_IF_DIFFERENT: rewriting a slot with identical bytes must issue zero byte writes.
+void test_write_if_different_skips_unchanged() {
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    TestRecord record = makeRecord(7);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC record));
+
+    FakeStorage::instance().resetCounters();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.updateRec(1, EDB_REC record));  // identical payload
+#if EDB_WRITE_IF_DIFFERENT
+    TEST_ASSERT_EQUAL_UINT32(0, FakeStorage::instance().byte_writes);
+#else
+    TEST_ASSERT_TRUE(FakeStorage::instance().byte_writes > 0);
+#endif
+    TestRecord readBack;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.readRec(1, EDB_REC readBack));
+    TEST_ASSERT_EQUAL_INT(7, readBack.value);
+}
+
+void test_batch_append_persists_after_endBatch() {
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.beginBatch());
+    TEST_ASSERT_TRUE(byteDb.batchActive());
+    appendSequence(byteDb, 1, 5);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.endBatch());
+    TEST_ASSERT_TRUE(!byteDb.batchActive());
+
+    EDB reopened(&FakeStorage::writeByte, &FakeStorage::readByte);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, reopened.open(0));
+    TEST_ASSERT_EQUAL_UINT32(5, reopened.count());
+    assertLiveSequence(reopened, {1, 2, 3, 4, 5});
+}
+
+// Power loss mid-batch: no endBatch(). open() must recover every appended record.
+void test_batch_reconciles_after_interrupted_batch() {
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.beginBatch());
+    appendSequence(byteDb, 1, 4);
+    // simulate a crash: drop the object without endBatch(), reopen from storage
+
+    EDB reopened(&FakeStorage::writeByte, &FakeStorage::readByte);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, reopened.open(0));
+    TEST_ASSERT_EQUAL_UINT32(4, reopened.count());
+    assertLiveSequence(reopened, {1, 2, 3, 4});
+    TEST_ASSERT_TRUE(!reopened.batchActive());
+
+    // the dirty bit is cleared, so the table is fully usable again
+    TEST_ASSERT_EQUAL_INT(EDB_OK, reopened.deleteRec(2));
+    TEST_ASSERT_EQUAL_UINT32(3, reopened.count());
+    TestRecord more = makeRecord(9);
+    unsigned long id = 0;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, reopened.appendRec(EDB_REC more, &id));
+    TEST_ASSERT_EQUAL_UINT32(2, id);   // freed slot reused -> free-list was rebuilt
+}
+
+void test_batch_rejects_mutations() {
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    appendSequence(byteDb, 1, 3);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.beginBatch());
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, byteDb.deleteRec(1));
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, byteDb.clear());
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, byteDb.compact());
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, byteDb.beginBatch());   // already batching
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.endBatch());
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, byteDb.endBatch());     // not batching
+}
+
+// A batched append must cost far fewer byte writes than an unbatched one (no header publish).
+void test_batch_reduces_writes() {
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    TestRecord record = makeRecord(1);
+
+    FakeStorage::instance().resetCounters();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC record));
+    unsigned long unbatched = FakeStorage::instance().byte_writes;
+
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.beginBatch());
+    FakeStorage::instance().resetCounters();
+    TestRecord other = makeRecord(2);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC other));
+    unsigned long batched = FakeStorage::instance().byte_writes;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.endBatch());
+
+    TEST_ASSERT_TRUE(batched < unbatched);
+}
+
 void test_next_table_offset() {
     TEST_ASSERT_EQUAL_UINT32(512, EDB::nextTableOffset(0, 512));
     TEST_ASSERT_EQUAL_UINT32(640, EDB::nextTableOffset(512, 128));
@@ -415,6 +505,11 @@ int run_smoke_tests() {
     RUN_TEST(test_ring_overwrites_when_full);
     RUN_TEST(test_ring_fifo_iteration);
     RUN_TEST(test_buffer_delete_does_io);
+    RUN_TEST(test_write_if_different_skips_unchanged);
+    RUN_TEST(test_batch_append_persists_after_endBatch);
+    RUN_TEST(test_batch_reconciles_after_interrupted_batch);
+    RUN_TEST(test_batch_rejects_mutations);
+    RUN_TEST(test_batch_reduces_writes);
     RUN_TEST(test_next_table_offset);
     RUN_TEST(test_open_or_create);
     RUN_TEST(test_multi_table_isolated_counts);

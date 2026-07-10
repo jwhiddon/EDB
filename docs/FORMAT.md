@@ -17,7 +17,7 @@ Each 48-byte copy:
 |--------|------|-------|-------|
 | 0 | 1 | `magic` | `0xDB` |
 | 1 | 1 | `version` | `3` |
-| 2 | 2 | `flags` | bit0 = encrypted; bit1 = stable record_id; bit2 = ring FIFO mode |
+| 2 | 2 | `flags` | bit0 = encrypted; bit1 = stable record_id; bit2 = ring FIFO mode; bit3 = batch in progress |
 | 4 | 4 | `seq` | monotonic; higher copy wins on open |
 | 8 | 4 | `n_slots` | high-water mark of allocated slots |
 | 12 | 4 | `n_live` | live record count (`count()`) |
@@ -83,6 +83,13 @@ When header flags bit1 (`EDB_HDR_STABLE_IDS`) is set via `enableStableIds()`:
 - `edb_vacuum.py --remap-json` reports `{old_recno, new_recno, record_id}` if you still hold a `recno`.
 
 Host-only [`tools/edb_vacuum.py`](../tools/edb_vacuum.py) repacks tombstone holes and may change `recno`.
+
+### Batch in progress (`EDB_HDR_BATCH`)
+
+Set by `beginBatch()` and cleared by `endBatch()`. While set, the header's `n_live`, `n_slots` and
+`free_head` are stale — the per-slot `status` byte remains ground truth. If `open()` finds this bit
+set (a crash mid-batch), it rebuilds those fields (and `next_record_id`) by scanning the slot region,
+then clears the bit. No records are lost. See [BENCHMARK.md](BENCHMARK.md).
 
 ### Ring FIFO mode (`EDB_HDR_RING`)
 

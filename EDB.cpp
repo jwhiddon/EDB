@@ -57,8 +57,16 @@ void EDB::setMallocFail(bool fail) { _edb_malloc_fail = fail; }
 void EDB::edbWrite(unsigned long ee, const byte* p, unsigned int recsize)
 {
   if (!_write_buffer) {
+#if EDB_WRITE_IF_DIFFERENT
+    // Most of a header republish is unchanged bytes; skipping them turns ~48 EEPROM writes into
+    // ~7. A read is orders of magnitude cheaper than a write on EEPROM/flash.
+    for (unsigned int i = 0; i < recsize; i++, ee++, p++) {
+      if (_read_byte(ee) != *p) _write_byte(ee, *p);
+    }
+#else
     for (unsigned int i = 0; i < recsize; i++)
       _write_byte(ee++, *p++);
+#endif
   } else {
     _write_buffer(ee, p, recsize);
   }
@@ -148,6 +156,11 @@ EDB_Status EDB::readHead()
     _active_copy = 1;
   }
   EDB_table_ptr = EDB_head_ptr + EDB_head.data_offset;
+  _batch = false;
+
+  // A batch that never reached endBatch() (power loss): counts are stale but no data is lost.
+  // Recover them by scanning the slot region, then clear the dirty bit.
+  if (EDB_head.flags & EDB_HDR_BATCH) return reconcileAfterBatch();
   return EDB_OK;
 }
 
@@ -270,6 +283,7 @@ EDB::EDB(EDB_Write_Handler *w, EDB_Read_Handler *r)
   _write_buffer = NULL;
   _read_buffer = NULL;
   _active_copy = 0;
+  _batch = false;
 }
 
 EDB::EDB(EDB_Write_Buffer *w, EDB_Read_Buffer *r)
@@ -279,6 +293,83 @@ EDB::EDB(EDB_Write_Buffer *w, EDB_Read_Buffer *r)
   _write_buffer = w;
   _read_buffer = r;
   _active_copy = 0;
+  _batch = false;
+}
+
+EDB_Status EDB::beginBatch()
+{
+  if (_batch) return EDB_ERROR;
+  if (ringModeEnabled()) return EDB_ERROR;   // ring_head must persist on every append
+  EDB_head.flags |= EDB_HDR_BATCH;
+  EDB_Status st = writeHead();               // mark on-disk dirty before any deferred append
+  if (st != EDB_OK) {
+    EDB_head.flags &= (uint16_t)~EDB_HDR_BATCH;
+    return st;
+  }
+  _batch = true;
+  return EDB_OK;
+}
+
+EDB_Status EDB::endBatch()
+{
+  if (!_batch) return EDB_ERROR;
+  _batch = false;
+  EDB_head.flags &= (uint16_t)~EDB_HDR_BATCH;
+  return writeHead();                        // publish final counts + clear the dirty bit
+}
+
+bool EDB::batchActive() const
+{
+  return _batch;
+}
+
+// An interrupted batch leaves LIVE slots the header never counted. Rebuild n_live / n_slots /
+// free_head (and next_record_id) by scanning the slot region, then clear the dirty bit.
+EDB_Status EDB::reconcileAfterBatch()
+{
+  const unsigned long cap = maxSlots();
+  unsigned long live = 0;
+  unsigned long high = 0;              // highest allocated slot index + 1
+  uint32_t max_id = 0;
+  const bool ids = stableIdsEnabled();
+
+  for (unsigned long i = 0; i < cap; i++) {
+    byte status = readByte(slotOffset(i));
+    if (status == EDB_SLOT_LIVE) {
+      live++;
+      high = i + 1;
+      if (ids) {
+        byte idbuf[4];
+        edbRead(slotOffset(i) + 1 + EDB_STABLE_ID_OFFSET, idbuf, 4);
+        uint32_t id = (uint32_t)idbuf[0] | ((uint32_t)idbuf[1] << 8) |
+                      ((uint32_t)idbuf[2] << 16) | ((uint32_t)idbuf[3] << 24);
+        if (id + 1 > max_id) max_id = id + 1;
+      }
+    } else if (status == EDB_SLOT_TOMBSTONE) {
+      high = i + 1;
+    }
+  }
+
+  uint32_t free_head = EDB_FREE_NONE;
+  if (hasFreeList()) {
+    for (unsigned long i = 0; i < high; i++) {
+      if (readByte(slotOffset(i)) != EDB_SLOT_TOMBSTONE) continue;
+      byte link[4];
+      link[0] = (byte)(free_head & 0xFF);
+      link[1] = (byte)((free_head >> 8) & 0xFF);
+      link[2] = (byte)((free_head >> 16) & 0xFF);
+      link[3] = (byte)((free_head >> 24) & 0xFF);
+      edbWrite(slotOffset(i) + 1, link, 4);
+      free_head = (uint32_t)i;
+    }
+  }
+
+  EDB_head.n_live = (uint32_t)live;
+  EDB_head.n_slots = (uint32_t)high;
+  EDB_head.free_head = free_head;
+  if (ids && max_id > readNextRecordId()) writeNextRecordId(max_id);
+  EDB_head.flags &= (uint16_t)~EDB_HDR_BATCH;
+  return writeHead();
 }
 
 EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned int recsize)
@@ -313,6 +404,7 @@ EDB_Status EDB::create(unsigned long head_ptr, unsigned long tablesize, unsigned
   edbWrite(EDB_head_ptr + EDB_HEADER_COPY_SIZE, (const byte*)&EDB_head, EDB_HEADER_COPY_SIZE);
 #endif
   _active_copy = 0;
+  _batch = false;
 
   EDB_Header verify;
   edbRead(EDB_head_ptr, (byte*)&verify, EDB_HEADER_COPY_SIZE);
@@ -397,6 +489,14 @@ EDB_Status EDB::appendRec(const EDB_Rec rec, unsigned long* out_recno)
   }
 
   if (inc_live) EDB_head.n_live++;
+
+  // In a batch the header publish is deferred to endBatch(); the slot's status byte is already
+  // durable, so an interrupted batch is recovered by reconcileAfterBatch() on the next open().
+  if (_batch) {
+    if (out_recno) *out_recno = idx + 1;
+    return EDB_OK;
+  }
+
   EDB_Status status = writeHead();
   if (status != EDB_OK) {
     if (inc_live) EDB_head.n_live--;
@@ -421,6 +521,7 @@ EDB_Status EDB::insertRec(unsigned long recno, const EDB_Rec rec)
 EDB_Status EDB::deleteRec(unsigned long recno)
 {
   if (ringModeEnabled()) return EDB_ERROR;
+  if (_batch) return EDB_ERROR;   // batches are append-only
   if (recno < 1 || recno > EDB_head.n_slots) return EDB_OUT_OF_RANGE;
   unsigned long idx = recno - 1;
   byte status = readByte(slotOffset(idx));
@@ -466,6 +567,7 @@ bool EDB::isLive(unsigned long recno)
 EDB_Status EDB::compact()
 {
   if (ringModeEnabled()) return EDB_ERROR;
+  if (_batch) return EDB_ERROR;
   // Reconcile counts and rebuild the free-list from tombstones (reclaims post-crash leaks).
   // Does not move live records: slot IDs remain stable.
   unsigned long live = 0;
@@ -646,6 +748,7 @@ unsigned long EDB::limit()
 
 EDB_Status EDB::clear()
 {
+  if (_batch) return EDB_ERROR;
   EDB_head.n_slots = 0;
   EDB_head.n_live = 0;
   EDB_head.free_head = EDB_FREE_NONE;
