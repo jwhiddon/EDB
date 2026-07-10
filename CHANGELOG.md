@@ -7,13 +7,6 @@ All notable changes to this project are documented here.
 > **Pre-release (alpha).** 2.0.0 is being staged as a pre-release (`v2.0.0-alpha.1`) while the v3
 > format and the gateway settle. The on-disk format and APIs may still change before the final
 > 2.0.0. Not yet recommended for production; pin a specific alpha tag if you depend on it.
->
-> **Known limitations (alpha).** Crash-safety is designed-in — slot bytes are written before the
-> header that publishes them, the status byte last, behind a dual-CRC32 header — but is not yet
-> exercised by fault-injection ("torn write") tests. At-rest record encryption is not yet
-> cross-validated between the C++ and Python implementations (the shared vector file is not loaded by
-> a test; the gateway is a blind ciphertext relay holding no keys); the serial transport session
-> *is* cross-validated. These are tracked for a later alpha.
 
 This is a format-breaking release. The on-disk layout is now v3: a redundant, checksummed
 "superblock" header plus framed, individually checksummed record slots. Deletes and inserts are
@@ -190,15 +183,23 @@ These follow directly from the stable-slot model and are intentional breaking ch
 The new format's guarantees are only credible if they are tested, so coverage was expanded to
 exercise each one:
 
-- Native (Unity) suites cover header ping-pong/self-heal, torn-write crash safety, per-record CRC
-  detection, free-list reuse, stable ids, ring FIFO, and the batch/reconcile path — i.e. the exact
-  failure modes the old format couldn't survive.
+- Native (Unity) suites cover header ping-pong, per-record CRC detection, free-list reuse, stable
+  ids, ring FIFO, and the batch/reconcile path — the exact failure modes the old format couldn't
+  survive.
+- **Crash-safety fault injection:** `FakeStorage` can drop every write after a chosen byte (a
+  simulated power loss). A test tears an append at *every* offset and asserts a fresh `open()` always
+  yields a consistent table — the old state or the fully applied one, never a corrupt read. Plus:
+  corrupting both header copies is reported as `EDB_ERROR`, and an O(1) delete is proven to leave
+  every other slot byte-for-byte unchanged.
+- **Cross-implementation checks:** the at-rest AEAD vector (`test/fixtures/crypto_vectors.json`) is
+  loaded by both the C++ device test and an OpenSSL-backed Python test, establishing C++ ↔ OpenSSL
+  agreement; the gateway suite exercises API-key auth, CORS/Host rejection, and `list_records`
+  offset/limit with tombstone-skipping against the real file backend.
 - Edge/scale suite (`test_edb_edge.cpp`, `tools/test_edb_edge.py`): 4k+ record / 1 MiB tables,
   20k-slot sparse tombstone patterns, ring wrap-around, large payloads, and megabyte grow.
 - Shipped, deterministically generated datasets (`test/data/sensorlog.bin`) with FNV-1a manifests;
   `tools/test_datasets.py` guards them against drift, and both the C++ device and the Python v3
-  reader assert byte-for-byte survival of realistic records through a v1 → v3 migration (proving the
-  two implementations agree on the format).
+  reader assert byte-for-byte survival of realistic records through a v1 → v3 migration.
 
 ### Not in this release
 

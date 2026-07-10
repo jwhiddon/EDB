@@ -65,6 +65,41 @@ async def test_file_backend_path_traversal_blocked(client, tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_list_records_offset_limit_and_tombstones(client, tmp_path, monkeypatch):
+    # Real storage (not the canned mock) so offset/limit/recno and sparse-skip are actually exercised.
+    monkeypatch.setattr(config, "FILE_ROOT", str(tmp_path))
+    cid = (await client.post("/connections", json={"backend": "file", "path": "range.db"})).json()["id"]
+    await client.post(
+        f"/connections/{cid}/tables",
+        json={"head_ptr": 0, "table_size": 8192, "rec_size": 4},
+    )
+    for i in range(1, 6):  # append records with values 1..5 -> recno 1..5
+        payload = base64.b64encode(struct.pack("<i", i)).decode()
+        r = await client.post(f"/connections/{cid}/tables/0/records", json={"payload_b64": payload})
+        assert r.json()["status"] == "EDB_OK"
+
+    def values(records):
+        return [struct.unpack("<i", base64.b64decode(x["payload_b64"]))[0] for x in records]
+
+    # Full listing: recno 1..5 in order, total 5, payloads intact.
+    full = (await client.get(f"/connections/{cid}/tables/0/records?offset=0&limit=50")).json()["data"]
+    assert [x["recno"] for x in full["records"]] == [1, 2, 3, 4, 5]
+    assert values(full["records"]) == [1, 2, 3, 4, 5]
+    assert full["total"] == 5
+
+    # offset=2, limit=2 -> recno 3,4 only (locks in the off-by-one range fix).
+    page = (await client.get(f"/connections/{cid}/tables/0/records?offset=2&limit=2")).json()["data"]
+    assert [x["recno"] for x in page["records"]] == [3, 4]
+    assert values(page["records"]) == [3, 4]
+
+    # Delete recno 2: the tombstone is skipped, remaining recnos are 1,3,4,5.
+    await client.delete(f"/connections/{cid}/tables/0/records/2")
+    after = (await client.get(f"/connections/{cid}/tables/0/records?offset=0&limit=50")).json()["data"]
+    assert [x["recno"] for x in after["records"]] == [1, 3, 4, 5]
+    assert after["total"] == 4
+
+
+@pytest.mark.asyncio
 async def test_file_backend_reopens_persisted_file(client, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "FILE_ROOT", str(tmp_path))
     r = await client.post("/connections", json={"backend": "file", "path": "p.db"})

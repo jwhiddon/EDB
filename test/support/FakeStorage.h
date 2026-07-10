@@ -13,12 +13,20 @@ public:
     unsigned long byte_reads = 0;
     unsigned long byte_writes = 0;   // counts calls to the byte write handler
 
+    // Torn-write / power-loss simulation for crash-safety tests. When write_budget >= 0, the byte
+    // write handler applies at most that many more writes, then silently drops every subsequent
+    // write (as a power loss would) and sets fault_triggered. -1 = unlimited (normal operation).
+    long write_budget = -1;
+    bool fault_triggered = false;
+
     void reset() {
         data.clear();
         buffer_reads = 0;
         buffer_writes = 0;
         byte_reads = 0;
         byte_writes = 0;
+        write_budget = -1;
+        fault_triggered = false;
     }
 
     void resetCounters() {
@@ -28,12 +36,26 @@ public:
         byte_writes = 0;
     }
 
+    // Allow n more byte writes, then drop all further writes (simulated power loss).
+    void failAfter(long n) {
+        write_budget = n;
+        fault_triggered = false;
+    }
+
+    // Restore normal (unlimited) writes.
+    void clearFault() {
+        write_budget = -1;
+        fault_triggered = false;
+    }
+
     void load(const std::vector<uint8_t>& bytes) {
         data = bytes;
         buffer_reads = 0;
         buffer_writes = 0;
         byte_reads = 0;
         byte_writes = 0;
+        write_budget = -1;
+        fault_triggered = false;
     }
 
     std::vector<uint8_t> snapshot() const {
@@ -117,6 +139,8 @@ private:
     }
 
     void writeByteImpl(unsigned long address, uint8_t value) {
+        if (write_budget == 0) { fault_triggered = true; return; }  // power loss: drop the write
+        if (write_budget > 0) write_budget--;
         resize(address + 1);
         byte_writes++;
         data[address] = value;

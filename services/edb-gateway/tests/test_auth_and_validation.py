@@ -67,3 +67,26 @@ async def test_record_payload_length_bounded(client, conn_id):
         json={"payload_b64": huge},
     )
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_cors_rejects_disallowed_origin(client):
+    # Preflight from a hostile origin is rejected outright.
+    r = await client.options(
+        "/devices",
+        headers={"Origin": "http://evil.example", "Access-Control-Request-Method": "GET"},
+    )
+    assert r.status_code == 400
+    # A simple request from a disallowed origin gets no allow-origin header (the browser blocks it).
+    r2 = await client.get("/devices", headers={"Origin": "http://evil.example"})
+    assert "access-control-allow-origin" not in {k.lower() for k in r2.headers}
+    # An allowlisted origin is echoed back.
+    r3 = await client.get("/devices", headers={"Origin": "http://127.0.0.1:8765"})
+    assert r3.headers.get("access-control-allow-origin") == "http://127.0.0.1:8765"
+
+
+@pytest.mark.asyncio
+async def test_trusted_host_rejects_bad_host(client):
+    # DNS-rebinding defense: a request whose Host header is not allowlisted is refused.
+    r = await client.get("/devices", headers={"Host": "evil.example"})
+    assert r.status_code == 400

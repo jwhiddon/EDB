@@ -224,6 +224,83 @@ void test_torn_older_header_recovers() {
     TEST_ASSERT_EQUAL_UINT32(4, reopened.count());
 }
 
+// Both header copies corrupt (not just the stale one) -> open() reports EDB_ERROR, never a
+// silent bad read. Complements test_torn_older_header_recovers (which corrupts only the older copy).
+void test_v3_corrupt_both_headers_error() {
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    appendSequence(byteDb, 1, 4);
+    std::vector<uint8_t>& d = FakeStorage::instance().data;
+    d[5] ^= 0xFF;                              // corrupt a CRC-covered byte (seq) of copy 0
+    d[EDB_HEADER_COPY_SIZE + 5] ^= 0xFF;       // and of copy 1 (magic/version left intact)
+    EDB reopened(&FakeStorage::writeByte, &FakeStorage::readByte);
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, reopened.open(0));
+}
+
+// O(1) delete must tombstone only the target slot and never rewrite/shift the others: the bytes of
+// every untouched slot are identical before and after the delete.
+void test_v3_delete_leaves_other_slots_byte_identical() {
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    appendSequence(byteDb, 1, 6);
+    std::vector<uint8_t> before = FakeStorage::instance().snapshot();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.deleteRec(3));   // tombstone slot index 2
+    std::vector<uint8_t> after = FakeStorage::instance().snapshot();
+
+    const unsigned long base = EDB_HEADER_SPAN;           // default data_offset
+    const unsigned long stride = 1 + REC_SIZE + 2;
+    for (int idx = 0; idx < 6; idx++) {
+        if (idx == 2) continue;                           // the deleted slot is expected to change
+        unsigned long off = base + (unsigned long)idx * stride;
+        for (unsigned long b = 0; b < stride; b++)
+            TEST_ASSERT_EQUAL_UINT8(before[off + b], after[off + b]);
+    }
+}
+
+// Crash-safety fault injection: tear an append after every possible number of byte writes and
+// assert a fresh open() always yields a consistent table (the old N-record state or the fully
+// applied N+1 state), never a corrupt read. Covers both the torn-slot and torn-header windows,
+// since an append writes the slot (payload, crc, status-last) and then publishes the header.
+void test_v3_torn_write_is_always_consistent() {
+    const int N = 6;
+    const int32_t TORN_VALUE = 0x01020304;   // all bytes non-0x00/0xFF -> deterministic write count
+
+    resetStorage();
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC_SIZE));
+    appendSequence(byteDb, 1, N);
+    std::vector<uint8_t> good = FakeStorage::instance().snapshot();   // last consistent state
+
+    // Cost (in byte writes) of one full append, structurally identical to the torn ones.
+    FakeStorage::instance().resetCounters();
+    TestRecord probe = makeRecord(TORN_VALUE);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC probe));   // commits N+1 (discarded below)
+    long full = (long)FakeStorage::instance().byte_writes;
+    TEST_ASSERT_TRUE(full > 0);
+
+    for (long k = 1; k <= full; k++) {
+        FakeStorage::instance().load(good);                          // restore state, clear fault
+        EDB torn(&FakeStorage::writeByte, &FakeStorage::readByte);
+        TEST_ASSERT_EQUAL_INT(EDB_OK, torn.open(0));                 // open() only reads
+        FakeStorage::instance().failAfter(k);                        // power loss after k writes
+        TestRecord extra = makeRecord(TORN_VALUE);
+        torn.appendRec(EDB_REC extra);                              // torn at offset k; ignore result
+        FakeStorage::instance().clearFault();
+
+        EDB reopened(&FakeStorage::writeByte, &FakeStorage::readByte);
+        TEST_ASSERT_EQUAL_INT(EDB_OK, reopened.open(0));            // a valid header always survives
+        unsigned long c = reopened.count();
+        TEST_ASSERT_TRUE(c == (unsigned long)N || c == (unsigned long)(N + 1));
+        int seen = 0;
+        for (unsigned long r = reopened.firstRec(); r != 0; r = reopened.nextRec(r)) {
+            TestRecord rec;
+            TEST_ASSERT_EQUAL_INT(EDB_OK, reopened.readRec(r, EDB_REC rec));   // every live rec CRC-valid
+            if (seen < N) TEST_ASSERT_EQUAL_INT(seen + 1, rec.value);          // originals 1..N intact
+            seen++;
+        }
+        TEST_ASSERT_EQUAL_INT((int)c, seen);
+    }
+}
+
 void test_v1_avr_needs_migration() {
     resetStorage();
     seedV1AvrDatabase(2, REC_SIZE, 128);
@@ -259,6 +336,9 @@ int run_integrity_tests() {
     RUN_TEST(test_v3_reopen_after_mixed_ops);
     RUN_TEST(test_header_nlive_matches_count);
     RUN_TEST(test_torn_older_header_recovers);
+    RUN_TEST(test_v3_corrupt_both_headers_error);
+    RUN_TEST(test_v3_delete_leaves_other_slots_byte_identical);
+    RUN_TEST(test_v3_torn_write_is_always_consistent);
     RUN_TEST(test_v1_avr_needs_migration);
     RUN_TEST(test_v1_esp32_needs_migration);
 #endif

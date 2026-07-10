@@ -4,7 +4,46 @@
 #if defined(EDB_ENABLE_CRYPTO)
 
 #include <string.h>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <cstdlib>
 #include "../examples/EDB_SerialBridge/bridge_session.h"
+
+// Minimal readers for the tiny, fixed-format fixtures/crypto_vectors.json (avoids a JSON dep).
+static std::string ctHexField(const std::string& j, const char* key) {
+  std::string needle = std::string("\"") + key + "\"";
+  size_t k = j.find(needle);
+  if (k == std::string::npos) return "";
+  size_t colon = j.find(':', k + needle.size());
+  if (colon == std::string::npos) return "";
+  size_t q1 = j.find('"', colon);
+  if (q1 == std::string::npos) return "";
+  size_t q2 = j.find('"', q1 + 1);
+  if (q2 == std::string::npos) return "";
+  return j.substr(q1 + 1, q2 - q1 - 1);
+}
+static long ctIntField(const std::string& j, const char* key) {
+  std::string needle = std::string("\"") + key + "\"";
+  size_t k = j.find(needle);
+  if (k == std::string::npos) return -1;
+  size_t colon = j.find(':', k + needle.size());
+  if (colon == std::string::npos) return -1;
+  return strtol(j.c_str() + colon + 1, nullptr, 10);
+}
+static std::vector<uint8_t> ctHexToBytes(const std::string& hex) {
+  auto nyb = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+  };
+  std::vector<uint8_t> out;
+  for (size_t i = 0; i + 1 < hex.size(); i += 2)
+    out.push_back((uint8_t)((nyb(hex[i]) << 4) | nyb(hex[i + 1])));
+  return out;
+}
 
 // RFC 8439 section 2.8.2 AEAD ChaCha20-Poly1305 known-answer test.
 void test_aead_rfc8439_vector() {
@@ -90,21 +129,33 @@ void test_nonce_uniqueness_changes_ciphertext() {
   TEST_ASSERT_NOT_EQUAL(0, memcmp(a + EDB_CRYPTO_NONCE_SIZE, b + EDB_CRYPTO_NONCE_SIZE, 4));
 }
 
-// Cross-impl known-answer: must match test/fixtures/crypto_vectors.json (sealed_hex), which is
-// generated authoritatively (OpenSSL/RFC 8439). Any other implementation checking the same file
-// is thereby cross-validated against this one.
+// Cross-impl known-answer, loaded from test/fixtures/crypto_vectors.json (generated authoritatively,
+// OpenSSL/RFC 8439). Driving the test from the shared file — rather than hardcoding the bytes —
+// makes the file the single source of truth: this C++ impl and the Python check
+// (services/edb-gateway/tests/test_crypto_relay.py) both validate against the same vector.
 void test_seal_record_shared_kat() {
-  uint8_t key[32]; memset(key, 0x42, sizeof(key));
-  uint8_t nonce[12] = {0,1,2,3,4,5,6,7,8,9,10,11};
-  uint8_t pt[4] = {1,2,3,4};
-  static const uint8_t expect_sealed[32] = {
-    0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,   // nonce
-    0xe5,0x42,0x57,0x42,                                           // ciphertext
-    0x57,0xef,0x18,0x7d,0x48,0x6b,0xd3,0x59,0x24,0x53,0x4d,0xa5,0xd4,0xeb,0x93,0xaa }; // tag
-  uint8_t blob[32]; size_t blob_len = 0;
-  TEST_ASSERT_EQUAL_INT(0, edb_crypto_seal_record(key, 7, 42, nonce, pt, 4, blob, &blob_len));
-  TEST_ASSERT_EQUAL_UINT32(32, (unsigned)blob_len);
-  TEST_ASSERT_EQUAL_UINT8_ARRAY(expect_sealed, blob, 32);
+  std::ifstream in("fixtures/crypto_vectors.json", std::ios::binary);
+  TEST_ASSERT_TRUE((bool)in);   // fixtures/crypto_vectors.json must be present (run from test/)
+  std::stringstream ss; ss << in.rdbuf();
+  std::string j = ss.str();
+
+  std::vector<uint8_t> key = ctHexToBytes(ctHexField(j, "key_hex"));
+  std::vector<uint8_t> nonce = ctHexToBytes(ctHexField(j, "nonce_hex"));
+  std::vector<uint8_t> pt = ctHexToBytes(ctHexField(j, "plaintext_hex"));
+  std::vector<uint8_t> expect = ctHexToBytes(ctHexField(j, "sealed_hex"));
+  long table_id = ctIntField(j, "table_id");
+  long record_id = ctIntField(j, "record_id");
+
+  TEST_ASSERT_EQUAL_UINT32(32, (unsigned)key.size());
+  TEST_ASSERT_EQUAL_UINT32(12, (unsigned)nonce.size());
+  TEST_ASSERT_TRUE(table_id >= 0 && record_id >= 0);
+  TEST_ASSERT_TRUE(expect.size() >= EDB_CRYPTO_NONCE_SIZE + EDB_CRYPTO_TAG_SIZE);
+
+  uint8_t blob[64]; size_t blob_len = 0;
+  TEST_ASSERT_EQUAL_INT(0, edb_crypto_seal_record(key.data(), (uint32_t)table_id, (uint32_t)record_id,
+                                                  nonce.data(), pt.data(), pt.size(), blob, &blob_len));
+  TEST_ASSERT_EQUAL_UINT32((unsigned)expect.size(), (unsigned)blob_len);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expect.data(), blob, (int)expect.size());
 }
 
 // Transport session KDF + line encryption, cross-checked against OpenSSL (Python).
