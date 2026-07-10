@@ -10,17 +10,30 @@ public:
     std::vector<uint8_t> data;
     unsigned long buffer_reads = 0;
     unsigned long buffer_writes = 0;
+    unsigned long byte_reads = 0;
+    unsigned long byte_writes = 0;   // counts calls to the byte write handler
 
     void reset() {
         data.clear();
         buffer_reads = 0;
         buffer_writes = 0;
+        byte_reads = 0;
+        byte_writes = 0;
+    }
+
+    void resetCounters() {
+        buffer_reads = 0;
+        buffer_writes = 0;
+        byte_reads = 0;
+        byte_writes = 0;
     }
 
     void load(const std::vector<uint8_t>& bytes) {
         data = bytes;
         buffer_reads = 0;
         buffer_writes = 0;
+        byte_reads = 0;
+        byte_writes = 0;
     }
 
     std::vector<uint8_t> snapshot() const {
@@ -105,11 +118,13 @@ private:
 
     void writeByteImpl(unsigned long address, uint8_t value) {
         resize(address + 1);
+        byte_writes++;
         data[address] = value;
     }
 
     uint8_t readByteImpl(unsigned long address) {
         resize(address + 1);
+        byte_reads++;
         return data[address];
     }
 
