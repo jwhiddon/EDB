@@ -14,6 +14,9 @@
 
 //Use SPIFFS FS as data storage
 #include <FS.h>
+#if defined(ESP32)
+#include <SPIFFS.h>
+#endif
 
 #define TABLE_SIZE 8192
 
@@ -22,8 +25,11 @@
 // operations will return EDB_OUT_OF_RANGE for all records outside the usable range.
 #define RECORDS_TO_CREATE 10
 
-char* db_name = "/db/edb_test.db";
+static const char DB_PATH[] = "/db/edb_test.db";
+const char* db_path = DB_PATH;
 File dbFile;
+
+void printError(EDB_Status err);
 
 // Arbitrary record definition for this table.
 // This should be modified to reflect your record needs.
@@ -58,12 +64,15 @@ void setup()
 
     randomSeed(analogRead(0));
 
-    SPIFFS.begin();
+    if (!SPIFFS.begin()) {
+        Serial.println("ERROR: SPIFFS mount failed");
+        return;
+    }
     delay(2000);
 
-    if (SPIFFS.exists(db_name)) {
+    if (SPIFFS.exists(db_path)) {
 
-        dbFile = SPIFFS.open(db_name, "r+");
+        dbFile = SPIFFS.open(db_path, "r+");
 
         if (dbFile) {
             Serial.print("Opening current table... ");
@@ -72,22 +81,36 @@ void setup()
                 Serial.println("DONE");
             } else {
                 Serial.println("ERROR");
-                Serial.println("Did not find database in the file " + String(db_name));
+                Serial.println("Did not find database in the file " + String(db_path));
                 Serial.print("Creating new table... ");
-                db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
-                Serial.println("DONE");
-                return;
+                EDB_Status createResult = db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
+                if (createResult == EDB_OK) {
+                    Serial.println("DONE");
+                } else {
+                    printError(createResult);
+                    dbFile.close();
+                    return;
+                }
             }
         } else {
-            Serial.println("Could not open file " + String(db_name));
+            Serial.println("Could not open file " + String(db_path));
             return;
         }
     } else {
         Serial.print("Creating table... ");
-        // create table at with starting address 0
-        dbFile = SPIFFS.open(db_name, "w+");
-        db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
-        Serial.println("DONE");
+        dbFile = SPIFFS.open(db_path, "w+");
+        if (!dbFile) {
+            Serial.println("ERROR: Could not create file " + String(db_path));
+            return;
+        }
+        EDB_Status createResult = db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
+        if (createResult == EDB_OK) {
+            Serial.println("DONE");
+        } else {
+            printError(createResult);
+            dbFile.close();
+            return;
+        }
     }
 
     recordLimit();
@@ -108,12 +131,17 @@ void setup()
     selectAll();
     countRecords();
     deleteAll();
-    Serial.println("Use insertRec() and deleteRec() carefully, they can be slow");
+    // v3: deleteRec() and insertRec() are O(1). deleteRec() tombstones a slot; a record's recno is
+    // stable and never renumbers, and a later append reuses the freed slot. insertRec() also just
+    // allocates a free slot (positional order is not preserved). Iterate with firstRec()/nextRec().
+    createRecords(5);
+    Serial.println("Deleting recno 3 (leaves a tombstone gap)...");
+    deleteOneRecord(3);
     countRecords();
-    for (int i = 1; i <= 20; i++) insertOneRecord(1);  // inserting from the beginning gets slower and slower
-    countRecords();
-    for (int i = 1; i <= 20; i++) deleteOneRecord(1);  // deleting records from the beginning is slower than from the end
-    countRecords();
+    selectAll();
+    Serial.println("Appending reuses the freed slot 3...");
+    insertOneRecord(1);
+    selectAll();
 
     dbFile.close();
 }
@@ -140,7 +168,8 @@ void deleteOneRecord(int recno)
 void deleteAll()
 {
     Serial.print("Truncating table... ");
-    db.clear();
+    EDB_Status result = db.clear();
+    if (result != EDB_OK) printError(result);
     Serial.println("DONE");
 }
 
@@ -165,7 +194,7 @@ void createRecords(int num_recs)
 
 void selectAll()
 {
-    for (int recno = 1; recno <= db.count(); recno++)
+    for (unsigned long recno = db.firstRec(); recno != 0; recno = db.nextRec(recno))
     {
         EDB_Status result = db.readRec(recno, EDB_REC logEvent);
         if (result == EDB_OK)
@@ -225,6 +254,9 @@ void printError(EDB_Status err)
             break;
         case EDB_TABLE_FULL:
             Serial.println("Table full");
+            break;
+        case EDB_ERROR:
+            Serial.println("Database error");
             break;
         case EDB_OK:
         default:

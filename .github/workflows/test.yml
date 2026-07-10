@@ -1,0 +1,99 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  native-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run native C++ tests (2.0.0 + crypto)
+        run: make -C test test
+
+  native-tests-107:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run native C++ tests (1.0.7 drop-in)
+        run: make -C test test-107
+
+  migration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Run migration tool tests
+        run: python -m unittest discover -s tools -p "test_*.py"
+
+  api-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Check public API surfaces
+        run: python scripts/check_api.py
+
+  gateway-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install gateway and run pytest
+        run: |
+          pip install -e "services/edb-gateway[dev]"
+          pytest services/edb-gateway/tests
+
+  arduino-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+      - name: Install cores
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr
+          arduino-cli core install esp32:esp32 || true
+      - name: Install libraries
+        run: |
+          arduino-cli lib install "SD" || true
+      - name: Compile AVR examples (2.0.0)
+        run: |
+          for sketch in \
+            examples/EDB_Simple/EDB_Simple.ino \
+            examples/EDB_Internal_EEPROM/EDB_Internal_EEPROM.ino \
+            examples/EDB_SDCARD/EDB_SDCARD.ino \
+            examples/EDB_SDCARD_Optimized/EDB_SDCARD_Optimized.ino \
+            examples/EDB_MultiTable/EDB_MultiTable.ino \
+            examples/EDB_Iteration/EDB_Iteration.ino \
+            examples/EDB_ReadModifyWrite/EDB_ReadModifyWrite.ino \
+            examples/EDB_AppendOnlyLogger/EDB_AppendOnlyLogger.ino \
+            examples/EDB_RecordTypes/EDB_RecordTypes.ino \
+            examples/EDB_TableSizing/EDB_TableSizing.ino \
+            examples/EDB_SchemaRotation/EDB_SchemaRotation.ino \
+            examples/EDB_Integrity/EDB_Integrity.ino \
+            examples/EDB_Migration/EDB_Migration.ino; do
+            echo "Compiling $sketch for arduino:avr:uno"
+            arduino-cli compile --library . --fqbn arduino:avr:uno "$(dirname "$sketch")"
+          done
+      - name: Compile crypto examples (ESP32, with EDB_ENABLE_CRYPTO)
+        run: |
+          if arduino-cli core list | grep -q esp32:esp32; then
+            for sketch in examples/EDB_SerialBridge examples/EDB_Encrypted; do
+              echo "Compiling $sketch for esp32:esp32:esp32"
+              arduino-cli compile --library . --fqbn esp32:esp32:esp32 \
+                --build-property "compiler.cpp.extra_flags=-DEDB_ENABLE_CRYPTO" "$sketch"
+            done
+          else
+            echo "ESP32 core not available; skipping crypto example compile"
+          fi

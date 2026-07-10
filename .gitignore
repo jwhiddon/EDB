@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.egg-info/
+*.exe
+test/test_edb
+test/test_edb_107
+.idea/

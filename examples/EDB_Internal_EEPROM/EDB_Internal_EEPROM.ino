@@ -51,11 +51,17 @@ void setup()
   Serial.println("Extended Database Library + Arduino Internal EEPROM Demo");
   Serial.println();
 
+#if defined(ESP8266) || defined(ESP32)
+  EEPROM.begin(TABLE_SIZE);
+#endif
+
   randomSeed(analogRead(0));
-  
-  Serial.print("Creating table...");
-  // create table at with starting address 0
-  db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
+
+  Serial.print("Opening table... ");
+  if (db.openOrCreate(0, TABLE_SIZE, (unsigned int)sizeof(logEvent)) != EDB_OK) {
+    Serial.println("ERROR");
+    return;
+  }
   Serial.println("DONE");
 
   recordLimit();
@@ -76,12 +82,17 @@ void setup()
   selectAll();
   countRecords();
   deleteAll();
-  Serial.println("Use insertRec() and deleteRec() carefully, they can be slow");
+  // v3: deleteRec() and insertRec() are O(1). deleteRec() tombstones a slot; a record's recno is
+  // stable and never renumbers, and a later append reuses the freed slot. insertRec() also just
+  // allocates a free slot (positional order is not preserved). Iterate with firstRec()/nextRec().
+  createRecords(5);
+  Serial.println("Deleting recno 3 (leaves a tombstone gap)...");
+  deleteOneRecord(3);
   countRecords();
-  for (int i = 1; i <= 20; i++) insertOneRecord(1); // inserting from the beginning gets slower and slower
-  countRecords();
-  for (int i = 1; i <= 20; i++) deleteOneRecord(1); // deleting records from the beginning is slower than from the end
-  countRecords();
+  selectAll();
+  Serial.println("Appending reuses the freed slot 3...");
+  insertOneRecord(1);
+  selectAll();
  
 }
 
@@ -107,7 +118,8 @@ void deleteOneRecord(int recno)
 void deleteAll()
 {
   Serial.print("Truncating table...");
-  db.clear();
+  EDB_Status result = db.clear();
+  if (result != EDB_OK) printError(result);
   Serial.println("DONE");
 }
 
@@ -132,7 +144,7 @@ void createRecords(int num_recs)
 
 void selectAll()
 {  
-  for (int recno = 1; recno <= db.count(); recno++)
+  for (unsigned long recno = db.firstRec(); recno != 0; recno = db.nextRec(recno))
   {
     EDB_Status result = db.readRec(recno, EDB_REC logEvent);
     if (result == EDB_OK)
@@ -192,6 +204,9 @@ void printError(EDB_Status err)
       break;
     case EDB_TABLE_FULL:
       Serial.println("Table full");
+      break;
+    case EDB_ERROR:
+      Serial.println("Database error");
       break;
     case EDB_OK:
     default:

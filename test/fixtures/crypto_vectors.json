@@ -1,0 +1,10 @@
+{
+  "algorithm": "chacha20-poly1305 (RFC 8439)",
+  "note": "sealed_hex = nonce(12) || ciphertext || tag(16); aad = table_id LE32 || record_id LE32",
+  "key_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+  "table_id": 7,
+  "record_id": 42,
+  "nonce_hex": "000102030405060708090a0b",
+  "plaintext_hex": "01020304",
+  "sealed_hex": "000102030405060708090a0be542574257ef187d486bd35924534da5d4eb93aa"
+}

@@ -15,6 +15,9 @@
 // Use the external SPI SD card as storage
 #include <SPI.h>
 #include <SD.h>
+#if defined(ESP32)
+#include <FS.h>
+#endif
 
 #define SD_PIN 10  // SD Card CS pin
 #define TABLE_SIZE 8192
@@ -24,8 +27,22 @@
 // operations will return EDB_OUT_OF_RANGE for all records outside the usable range.
 #define RECORDS_TO_CREATE 10
 
-char* db_name = "/db/edb_test.db";
+static const char DB_PATH_DEFAULT[] = "/db/edb_test.db";
+static const char DB_PATH_ROOT[] = "/edb_test.db";
+const char* db_path = DB_PATH_DEFAULT;
 File dbFile;
+
+// FILE_WRITE includes O_APPEND, which breaks seek() on AVR SD (see arduino-libraries/SD#50).
+#if defined(ESP32)
+File openDbFileExisting() { return SD.open(db_path, "r+"); }
+File openDbFileNew() { return SD.open(db_path, "w+"); }
+#else
+#define EDB_SD_OPEN_FLAGS (O_READ | O_WRITE | O_CREAT)
+File openDbFileExisting() { return SD.open(db_path, EDB_SD_OPEN_FLAGS); }
+File openDbFileNew() { return SD.open(db_path, EDB_SD_OPEN_FLAGS); }
+#endif
+
+void printError(EDB_Status err);
 
 // Arbitrary record definition for this table.
 // This should be modified to reflect your record needs.
@@ -39,15 +56,22 @@ logEvent;
 // Also blinks the led while writing/reading
 inline void writer (unsigned long address, const byte* data, unsigned int recsize) {
     digitalWrite(13, HIGH);
+#if defined(ESP32)
+    dbFile.seek(address, SeekSet);
+#else
     dbFile.seek(address);
+#endif
     dbFile.write(data,recsize);
-    dbFile.flush();
     digitalWrite(13, LOW);
 }
 
 inline void reader (unsigned long address, byte* data, unsigned int recsize) {
     digitalWrite(13, HIGH);
+#if defined(ESP32)
+    dbFile.seek(address, SeekSet);
+#else
     dbFile.seek(address);
+#endif
     dbFile.read(data,recsize);
     digitalWrite(13, LOW);
 }
@@ -72,20 +96,25 @@ void setup()
         return;
     }
 
-    // Check dir for db files
+    // Ensure database directory exists. Some SD stacks cannot create subfolders;
+    // fall back to the card root rather than failing silently.
     if (!SD.exists("/db")) {
         Serial.println("Dir for Db files does not exist, creating...");
-        SD.mkdir("/db");
+        if (!SD.mkdir("/db")) {
+            Serial.println("WARN: Could not create /db (subfolder may be unsupported).");
+            Serial.println("Falling back to SD card root: /edb_test.db");
+            db_path = DB_PATH_ROOT;
+        }
     }
 
-    if (SD.exists(db_name)) {
+    if (SD.exists(db_path)) {
 
-        dbFile = SD.open(db_name, FILE_WRITE);
+        dbFile = openDbFileExisting();
 
         // Sometimes it wont open at first attempt, espessialy after cold start
         // Let's try one more time
         if (!dbFile) {
-            dbFile = SD.open(db_name, FILE_WRITE);
+            dbFile = openDbFileExisting();
         }
 
         if (dbFile) {
@@ -95,22 +124,39 @@ void setup()
                 Serial.println("DONE");
             } else {
                 Serial.println("ERROR");
-                Serial.println("Did not find database in the file " + String(db_name));
+                Serial.println("Did not find database in the file " + String(db_path));
                 Serial.print("Creating new table... ");
-                db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
-                Serial.println("DONE");
-                return;
+                EDB_Status createResult = db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
+                if (createResult == EDB_OK) {
+                    Serial.println("DONE");
+                } else {
+                    printError(createResult);
+                    dbFile.close();
+                    return;
+                }
             }
         } else {
-            Serial.println("Could not open file " + String(db_name));
+            Serial.println("Could not open file " + String(db_path));
             return;
         }
     } else {
         Serial.print("Creating table... ");
-        // create table at with starting address 0
-        dbFile = SD.open(db_name, FILE_WRITE);
-        db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
-        Serial.println("DONE");
+        dbFile = openDbFileNew();
+        if (!dbFile) {
+            dbFile = openDbFileNew();
+        }
+        if (!dbFile) {
+            Serial.println("ERROR: Could not create file " + String(db_path));
+            return;
+        }
+        EDB_Status createResult = db.create(0, TABLE_SIZE, (unsigned int)sizeof(logEvent));
+        if (createResult == EDB_OK) {
+            Serial.println("DONE");
+        } else {
+            printError(createResult);
+            dbFile.close();
+            return;
+        }
     }
 
     recordLimit();
@@ -131,13 +177,19 @@ void setup()
     selectAll();
     countRecords();
     deleteAll();
-    Serial.println("Use insertRec() and deleteRec() carefully, they can be slow");
+    // v3: deleteRec() and insertRec() are O(1). deleteRec() tombstones a slot; a record's recno is
+    // stable and never renumbers, and a later append reuses the freed slot. insertRec() also just
+    // allocates a free slot (positional order is not preserved). Iterate with firstRec()/nextRec().
+    createRecords(5);
+    Serial.println("Deleting recno 3 (leaves a tombstone gap)...");
+    deleteOneRecord(3);
     countRecords();
-    for (int i = 1; i <= 20; i++) insertOneRecord(1);  // inserting from the beginning gets slower and slower
-    countRecords();
-    for (int i = 1; i <= 20; i++) deleteOneRecord(1);  // deleting records from the beginning is slower than from the end
-    countRecords();
+    selectAll();
+    Serial.println("Appending reuses the freed slot 3...");
+    insertOneRecord(1);
+    selectAll();
 
+    dbFile.flush();
     dbFile.close();
 }
 
@@ -163,7 +215,8 @@ void deleteOneRecord(int recno)
 void deleteAll()
 {
     Serial.print("Truncating table... ");
-    db.clear();
+    EDB_Status result = db.clear();
+    if (result != EDB_OK) printError(result);
     Serial.println("DONE");
 }
 
@@ -188,7 +241,7 @@ void createRecords(int num_recs)
 
 void selectAll()
 {
-    for (int recno = 1; recno <= db.count(); recno++)
+    for (unsigned long recno = db.firstRec(); recno != 0; recno = db.nextRec(recno))
     {
         EDB_Status result = db.readRec(recno, EDB_REC logEvent);
         if (result == EDB_OK)
@@ -248,6 +301,9 @@ void printError(EDB_Status err)
             break;
         case EDB_TABLE_FULL:
             Serial.println("Table full");
+            break;
+        case EDB_ERROR:
+            Serial.println("Database error");
             break;
         case EDB_OK:
         default:

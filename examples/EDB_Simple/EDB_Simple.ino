@@ -48,7 +48,14 @@ void setup()
   Serial.println("Extended Database Library + Arduino Internal EEPROM Demo");
   Serial.println();
 
-  db.create(0, TABLE_SIZE, sizeof(logEvent));
+#if defined(ESP8266) || defined(ESP32)
+  EEPROM.begin(TABLE_SIZE);
+#endif
+
+  if (db.openOrCreate(0, TABLE_SIZE, sizeof(logEvent)) != EDB_OK) {
+    Serial.println("ERROR: database init failed");
+    return;
+  }
 
   Serial.print("Record Count: "); Serial.println(db.count());
 
