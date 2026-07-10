@@ -45,6 +45,14 @@ REQUIRED_METHODS_V3 = [
     "nextRec",
     "isLive",
     "compact",
+    "enableRingMode",
+    "ringModeEnabled",
+    "fifoFirstRec",
+    "fifoNextRec",
+    "enableStableIds",
+    "stableIdsEnabled",
+    "recordId",
+    "findRecById",
 ]
 
 REQUIRED_TYPES_V3 = [

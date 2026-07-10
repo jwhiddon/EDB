@@ -76,6 +76,11 @@ jobs:
             examples/EDB_SDCARD_Optimized/EDB_SDCARD_Optimized.ino \
             examples/EDB_MultiTable/EDB_MultiTable.ino \
             examples/EDB_Iteration/EDB_Iteration.ino \
+            examples/EDB_ReadModifyWrite/EDB_ReadModifyWrite.ino \
+            examples/EDB_AppendOnlyLogger/EDB_AppendOnlyLogger.ino \
+            examples/EDB_RecordTypes/EDB_RecordTypes.ino \
+            examples/EDB_TableSizing/EDB_TableSizing.ino \
+            examples/EDB_SchemaRotation/EDB_SchemaRotation.ino \
             examples/EDB_Integrity/EDB_Integrity.ino \
             examples/EDB_Migration/EDB_Migration.ino; do
             echo "Compiling $sketch for arduino:avr:uno"

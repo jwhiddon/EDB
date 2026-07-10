@@ -175,7 +175,7 @@ void setup()
     // stable and never renumbers, and a later append reuses the freed slot. insertRec() also just
     // allocates a free slot (positional order is not preserved). Iterate with firstRec()/nextRec().
     createRecords(5);
-    Serial.println("Deleting recno 3 (leaves a stable-id gap)...");
+    Serial.println("Deleting recno 3 (leaves a tombstone gap)...");
     deleteOneRecord(3);
     countRecords();
     selectAll();

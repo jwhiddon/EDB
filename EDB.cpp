@@ -349,12 +349,64 @@ EDB_Status EDB::appendRec(const EDB_Rec rec)
 
 EDB_Status EDB::appendRec(const EDB_Rec rec, unsigned long* out_recno)
 {
-  unsigned long idx = allocSlot();
-  if (idx == EDB_FREE_NONE) return EDB_TABLE_FULL;
-  writeSlot(idx, rec);
-  EDB_head.n_live++;
+  unsigned long idx;
+  bool inc_live = true;
+  bool grew_slots = false;
+
+  if (ringModeEnabled()) {
+    unsigned long cap = maxSlots();
+    if (cap == 0) return EDB_ERROR;
+    if (EDB_head.n_live < cap) {
+      idx = EDB_head.n_slots;
+      EDB_head.n_slots++;
+      grew_slots = true;
+    } else {
+      idx = readRingHead();
+      writeRingHead((uint32_t)((idx + 1) % cap));
+      inc_live = false;
+    }
+  } else {
+    idx = allocSlot();
+    if (idx == EDB_FREE_NONE) return EDB_TABLE_FULL;
+  }
+
+  EDB_Status st = EDB_OK;
+  if (stableIdsEnabled()) {
+    byte* temp = (byte*)edbMalloc(EDB_head.rec_size);
+    if (!temp) {
+      st = EDB_ERROR;
+    } else {
+      memcpy(temp, rec, EDB_head.rec_size);
+      uint32_t id = readNextRecordId();
+      stampRecordId(temp, id);
+      st = writeSlot(idx, temp);
+      if (st == EDB_OK) writeNextRecordId(id + 1);
+      free(temp);
+    }
+  } else {
+    st = writeSlot(idx, rec);
+  }
+
+  if (st != EDB_OK) {
+    if (grew_slots) EDB_head.n_slots--;
+    if (ringModeEnabled() && !inc_live) {
+      unsigned long cap = maxSlots();
+      writeRingHead((uint32_t)((idx + cap - 1) % cap));
+    }
+    return st;
+  }
+
+  if (inc_live) EDB_head.n_live++;
   EDB_Status status = writeHead();
-  if (status != EDB_OK) { EDB_head.n_live--; return status; }
+  if (status != EDB_OK) {
+    if (inc_live) EDB_head.n_live--;
+    if (grew_slots) EDB_head.n_slots--;
+    if (ringModeEnabled() && !inc_live) {
+      unsigned long cap = maxSlots();
+      writeRingHead((uint32_t)((idx + cap - 1) % cap));
+    }
+    return status;
+  }
   if (out_recno) *out_recno = idx + 1;
   return EDB_OK;
 }
@@ -368,6 +420,7 @@ EDB_Status EDB::insertRec(unsigned long recno, const EDB_Rec rec)
 
 EDB_Status EDB::deleteRec(unsigned long recno)
 {
+  if (ringModeEnabled()) return EDB_ERROR;
   if (recno < 1 || recno > EDB_head.n_slots) return EDB_OUT_OF_RANGE;
   unsigned long idx = recno - 1;
   byte status = readByte(slotOffset(idx));
@@ -412,6 +465,7 @@ bool EDB::isLive(unsigned long recno)
 
 EDB_Status EDB::compact()
 {
+  if (ringModeEnabled()) return EDB_ERROR;
   // Reconcile counts and rebuild the free-list from tombstones (reclaims post-crash leaks).
   // Does not move live records: slot IDs remain stable.
   unsigned long live = 0;
@@ -435,6 +489,151 @@ EDB_Status EDB::compact()
   return writeHead();
 }
 
+/**************************************************/
+// stable record_id helpers (distinct from slot recno; survives host-side edb_vacuum.py)
+
+uint32_t EDB::readNextRecordId() const
+{
+  return (uint32_t)EDB_head.reserved[EDB_STABLE_ID_OFFSET] |
+         ((uint32_t)EDB_head.reserved[EDB_STABLE_ID_OFFSET + 1] << 8) |
+         ((uint32_t)EDB_head.reserved[EDB_STABLE_ID_OFFSET + 2] << 16) |
+         ((uint32_t)EDB_head.reserved[EDB_STABLE_ID_OFFSET + 3] << 24);
+}
+
+void EDB::writeNextRecordId(uint32_t id)
+{
+  EDB_head.reserved[EDB_STABLE_ID_OFFSET] = (uint8_t)(id & 0xFF);
+  EDB_head.reserved[EDB_STABLE_ID_OFFSET + 1] = (uint8_t)((id >> 8) & 0xFF);
+  EDB_head.reserved[EDB_STABLE_ID_OFFSET + 2] = (uint8_t)((id >> 16) & 0xFF);
+  EDB_head.reserved[EDB_STABLE_ID_OFFSET + 3] = (uint8_t)((id >> 24) & 0xFF);
+}
+
+uint32_t EDB::peekRecordId(const byte* payload) const
+{
+  return (uint32_t)payload[0] | ((uint32_t)payload[1] << 8) |
+         ((uint32_t)payload[2] << 16) | ((uint32_t)payload[3] << 24);
+}
+
+void EDB::stampRecordId(byte* payload, uint32_t id) const
+{
+  payload[0] = (byte)(id & 0xFF);
+  payload[1] = (byte)((id >> 8) & 0xFF);
+  payload[2] = (byte)((id >> 16) & 0xFF);
+  payload[3] = (byte)((id >> 24) & 0xFF);
+}
+
+bool EDB::stableIdsEnabled() const
+{
+  return (EDB_head.flags & EDB_HDR_STABLE_IDS) != 0;
+}
+
+EDB_Status EDB::enableStableIds()
+{
+  if (EDB_head.rec_size < 4) return EDB_ERROR;
+  EDB_head.flags |= EDB_HDR_STABLE_IDS;
+  uint32_t max_id = 0;
+  for (unsigned long i = 0; i < EDB_head.n_slots; i++) {
+    if (readByte(slotOffset(i)) != EDB_SLOT_LIVE) continue;
+    byte payload[4];
+    edbRead(slotOffset(i) + 1, payload, 4);
+    uint32_t id = peekRecordId(payload);
+    if (id > max_id) max_id = id;
+  }
+  writeNextRecordId(max_id + 1);
+  return writeHead();
+}
+
+EDB_Status EDB::recordId(unsigned long recno, uint32_t* out_id) const
+{
+  if (!out_id) return EDB_ERROR;
+  if (!stableIdsEnabled()) return EDB_ERROR;
+  if (recno < 1 || recno > EDB_head.n_slots) return EDB_OUT_OF_RANGE;
+  if (readByte(slotOffset(recno - 1)) != EDB_SLOT_LIVE) return EDB_DELETED;
+  byte payload[4];
+  unsigned long off = slotOffset(recno - 1) + 1;
+  for (unsigned int i = 0; i < 4; i++)
+    payload[i] = readByte(off + i);
+  *out_id = peekRecordId(payload);
+  return EDB_OK;
+}
+
+EDB_Status EDB::findRecById(uint32_t record_id, unsigned long* out_recno) const
+{
+  if (!out_recno) return EDB_ERROR;
+  if (!stableIdsEnabled()) return EDB_ERROR;
+  for (unsigned long i = 0; i < EDB_head.n_slots; i++) {
+    if (readByte(slotOffset(i)) != EDB_SLOT_LIVE) continue;
+    byte payload[4];
+    unsigned long off = slotOffset(i) + 1;
+    for (unsigned int j = 0; j < 4; j++)
+      payload[j] = readByte(off + j);
+    if (peekRecordId(payload) == record_id) {
+      *out_recno = i + 1;
+      return EDB_OK;
+    }
+  }
+  return EDB_OUT_OF_RANGE;
+}
+
+/**************************************************/
+// ring FIFO (append-only; deleteRec returns EDB_ERROR; use clear() to wipe)
+
+uint32_t EDB::readRingHead() const
+{
+  return (uint32_t)EDB_head.reserved[EDB_RING_HEAD_OFFSET] |
+         ((uint32_t)EDB_head.reserved[EDB_RING_HEAD_OFFSET + 1] << 8) |
+         ((uint32_t)EDB_head.reserved[EDB_RING_HEAD_OFFSET + 2] << 16) |
+         ((uint32_t)EDB_head.reserved[EDB_RING_HEAD_OFFSET + 3] << 24);
+}
+
+void EDB::writeRingHead(uint32_t head)
+{
+  EDB_head.reserved[EDB_RING_HEAD_OFFSET] = (uint8_t)(head & 0xFF);
+  EDB_head.reserved[EDB_RING_HEAD_OFFSET + 1] = (uint8_t)((head >> 8) & 0xFF);
+  EDB_head.reserved[EDB_RING_HEAD_OFFSET + 2] = (uint8_t)((head >> 16) & 0xFF);
+  EDB_head.reserved[EDB_RING_HEAD_OFFSET + 3] = (uint8_t)((head >> 24) & 0xFF);
+}
+
+bool EDB::ringModeEnabled() const
+{
+  return (EDB_head.flags & EDB_HDR_RING) != 0;
+}
+
+bool EDB::ringIsFull() const
+{
+  return ringModeEnabled() && EDB_head.n_live >= maxSlots();
+}
+
+EDB_Status EDB::enableRingMode()
+{
+  EDB_head.flags |= EDB_HDR_RING;
+  unsigned long cap = maxSlots();
+  if (cap == 0) return EDB_ERROR;
+  uint32_t head = (EDB_head.n_live >= cap) ? 0 : (uint32_t)EDB_head.n_slots;
+  writeRingHead(head);
+  return writeHead();
+}
+
+unsigned long EDB::fifoFirstRec()
+{
+  if (!ringModeEnabled()) return firstRec();
+  if (!ringIsFull()) return firstRec();
+  return readRingHead() + 1;
+}
+
+unsigned long EDB::fifoNextRec(unsigned long recno)
+{
+  if (!ringModeEnabled()) return nextRec(recno);
+  if (recno < 1 || recno > EDB_head.n_slots) return 0;
+  if (!ringIsFull()) return nextRec(recno);
+
+  unsigned long cap = maxSlots();
+  unsigned long slot = recno - 1;
+  unsigned long next_slot = (slot + 1) % cap;
+  if (next_slot == readRingHead()) return 0;
+  return next_slot + 1;
+}
+
 unsigned long EDB::count()
 {
   return EDB_head.n_live;
@@ -450,6 +649,8 @@ EDB_Status EDB::clear()
   EDB_head.n_slots = 0;
   EDB_head.n_live = 0;
   EDB_head.free_head = EDB_FREE_NONE;
+  if (ringModeEnabled()) writeRingHead(0);
+  if (stableIdsEnabled()) writeNextRecordId(1);
   return writeHead();
 }
 

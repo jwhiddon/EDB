@@ -90,9 +90,9 @@ void setup() {
 * [API reference](docs/API.md)
 * [Upgrade guide](docs/UPGRADE.md) — **start here if upgrading from 1.0.6**
 * [FAQ](docs/FAQ.md)
-* [v1 to v2 migration](docs/MIGRATION.md)
+* [v1/v2 to v3 migration](docs/MIGRATION.md)
 * [Testing](docs/TESTING.md)
-* [Migration tool](tools/README.md)
+* [Host tools](tools/README.md) — migrate, check, vacuum, grow
 * [Gateway & Manager](docs/GATEWAY.md) — REST API and web UI for device databases
 * [Encryption](docs/ENCRYPTION.md) — end-to-end and at-rest encryption
 * [1.0.7 drop-in release](release/1.0.7/README.md)
@@ -113,6 +113,11 @@ Open [http://127.0.0.1:8765/manager](http://127.0.0.1:8765/manager). See [docs/G
 
 * [Simple Example using internal Arduino EEPROM](examples/EDB_Simple)
 * [Multiple tables in one storage backend](examples/EDB_MultiTable)
+* [Read-modify-write (partial field update)](examples/EDB_ReadModifyWrite)
+* [Append-only logger](examples/EDB_AppendOnlyLogger)
+* [Safe record struct types](examples/EDB_RecordTypes)
+* [Table size / limit calculation](examples/EDB_TableSizing)
+* [Schema rotation (new record layout)](examples/EDB_SchemaRotation)
 * [Arduino EEPROM providing 4096 - 32768 bits of address space](examples/EDB_Internal_EEPROM)
 * [AT24C1024 I2C EEPROM providing 1,048,576 bits of address space](examples/EDB_AT24C1024)
 * [24XX512 EEPROM providing up to 4 Mbit of address space](examples/EDB_24XX512)
@@ -126,37 +131,46 @@ Open [http://127.0.0.1:8765/manager](http://127.0.0.1:8765/manager). See [docs/G
 
 ```bash
 make test
+cd services/edb-gateway && pip install -e ".[dev]" && pytest
+python -m unittest discover -s tools -p "test_*.py"
+python scripts/check_api.py
 ```
 
-This runs native tests for **2.0.0** and **1.0.7**, migration tests, and API compatibility checks.
+This runs native tests for **2.0.0** and **1.0.7**, host tool tests (`test_edb_migrate`, `test_edb_vacuum`, `test_edb_grow`), gateway pytest, and API compatibility checks.
 
 Existing users on 1.0.6 can adopt the drop-in [1.0.7 release](release/1.0.7/README.md) first — see [docs/UPGRADE.md](docs/UPGRADE.md).
 
 See [docs/TESTING.md](docs/TESTING.md) for details.
 
-## Migration from v1
+## Migration from legacy formats
 
-EDB 2.0.0 uses a packed 12-byte cross-platform header. Migrate SD/SPIFFS database files with:
+EDB 2.0.0 uses the **v3** on-disk format (redundant CRC header, framed slots). Legacy v1/v2 files are
+not upgraded in place — migrate SD/SPIFFS/EEPROM dumps with:
 
 ```bash
 python tools/edb_migrate.py old.db new.db --arch auto
 ```
 
-See [docs/MIGRATION.md](docs/MIGRATION.md).
+Use [tools/edb_check.py](tools/edb_check.py) to validate output. See [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ## Releases
 
 ### 2.0.0
 
-* Packed v2 on-disk header (12 bytes, cross-platform)
+* **v3 on-disk format** — redundant 48-byte×2 CRC header, per-slot CRC-16, tombstone delete
+* **Gateway & Manager** — FastAPI REST + web UI over serial ([docs/GATEWAY.md](docs/GATEWAY.md))
+* **Encryption** — optional ChaCha20-Poly1305 at rest and end-to-end blind relay ([docs/ENCRYPTION.md](docs/ENCRYPTION.md))
+* **Host tools** — `edb_migrate.py`, `edb_check.py`, `edb_vacuum.py`, `edb_grow.py` ([tools/README.md](tools/README.md))
+* **Ring FIFO mode** — `enableRingMode()`, `fifoFirstRec()` / `fifoNextRec()` for append-only logs
+* **Stable record ids** — `enableStableIds()`, `recordId()`, `findRecById()` for durable logical identity
+* **`compact()`** — on-device free-list repair (host `edb_vacuum.py` repacks slots offline)
 * Fixed `recno == 0` bounds checking across all operations
 * `open()` and `create()` validate headers and verify writes
-* `malloc` failure handling in shift operations
-* Block-shift optimization for buffer handlers
+* Block-shift optimization for buffer handlers (legacy v1/v2 paths in migration tool)
 * Removed stale mandatory reliance on a single global instance; `extern EDB edb` kept for 1.0.x compatibility
 * Multi-table helpers: `headPtr()`, `tableSize()`, `nextTableOffset()`, `openOrCreate()`
 * `clear()` returns `EDB_Status`
-* Added migration tool, documentation, native test suite, and CI
+* Native test suite, gateway pytest, host tool tests, and CI
 
 ### 1.0.7
 

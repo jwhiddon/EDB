@@ -151,9 +151,9 @@ async def list_records(
     count_r = await conn.backend.count(head_ptr)
     total = int(count_r.data.get("count", 0))
 
-    # v3 record ids are stable and may be sparse (deleted slots are tombstones). Scan by
-    # recno, skip tombstones/corrupt slots, and stop at the end of the slot range. The scan
-    # is bounded so a misbehaving device cannot make this loop unbounded.
+    # v3 slots may be sparse after deletes (tombstones). Scan by recno, skip
+    # EDB_DELETED / EDB_CORRUPT, and stop at end of slot range. Bounded so a
+    # misbehaving device cannot make this loop unbounded.
     records: list[dict] = []
     recno = offset + 1
     max_scan = offset + limit * 4 + 64

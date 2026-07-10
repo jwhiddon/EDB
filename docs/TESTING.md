@@ -31,7 +31,7 @@ Requirements: `g++` with C++11 support.
 
 | Suite | File | Purpose |
 |-------|------|---------|
-| Smoke | `test_edb.cpp` | Core API validation |
+| Smoke | `test_edb.cpp` | Core API validation, stable ids, ring FIFO (`fifoFirstRec`/`fifoNextRec`) |
 | Data integrity | `test_edb_integrity.cpp` | Full-table record preservation |
 | Code integrity | `test_api_compat.cpp` | Regression cases + golden fixtures |
 | Crypto | `test_crypto.cpp` | AEAD round-trip, wrong key |
@@ -74,13 +74,14 @@ With ESP32 running `EDB_SerialBridge`:
 EDB_GATEWAY_INSECURE=1 pytest -m serial   # when serial tests are added
 ```
 
-## Migration tool tests
+## Host tool tests
 
 ```bash
 python -m unittest discover -s tools -p "test_*.py"
 ```
 
-Includes record-region preservation, full-table migration, and padding checks.
+Covers migration (`test_edb_migrate`), vacuum/repack (`test_edb_vacuum`), and grow (`test_edb_grow`):
+record-region preservation, full-table migration, padding checks, remap JSON, and table-size growth.
 
 ## Arduino compile check
 
@@ -98,7 +99,7 @@ GitHub Actions workflow `.github/workflows/test.yml` runs:
 
 1. Native C++ tests (2.0.0) including crypto suites
 2. Native C++ tests (1.0.7 drop-in)
-3. Python migration tests
+3. Host tool tests (`tools/test_*.py`)
 4. Public API compatibility check
 5. Arduino example compiles (AVR + ESP32 SerialBridge)
 6. Gateway pytest suite

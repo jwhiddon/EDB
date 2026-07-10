@@ -33,6 +33,14 @@ stored_rec_size = plaintext_len + 28          (EDB_CRYPTO_RECORD_OVERHEAD)
   verification, so records cannot be silently swapped or replayed.
 - **Verification:** the tag is checked in constant time before decryption.
 
+### Identity (AAD `record_id`)
+
+The `record_id` in AAD must be a **logical record id** — a field in your payload or the value from
+`enableStableIds()` / `recordId()` — **not** the slot `recno` returned by `appendRec`. Slot indices
+change when a ring table overwrites the oldest entry, when a tombstoned slot is reused, or after
+host `edb_vacuum.py` repacks the file. Use the same logical id for `seal_record` and `open_record`
+that you would use for bookmarks or `findRecById()`.
+
 ### Reference API (`EDB_Crypto.h`)
 
 ```c

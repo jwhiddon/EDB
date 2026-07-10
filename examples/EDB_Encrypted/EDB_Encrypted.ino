@@ -64,7 +64,8 @@ void setup() {
   make_nonce(nonce);
   uint8_t sealed[STORED_SIZE];
   size_t sealed_len = 0;
-  edb_crypto_seal_record(KEY, 0 /*table_id*/, 0 /*record_id*/, nonce,
+  // AAD record_id must be a durable logical id (struct field or enableStableIds()), not slot recno.
+  edb_crypto_seal_record(KEY, 0 /*table_id*/, 1 /*record_id — logical id, not recno*/, nonce,
                          (const uint8_t *)&secret, PLAINTEXT_SIZE, sealed, &sealed_len);
   unsigned long recno = 0;
   db.appendRec(EDB_REC sealed[0], &recno);
@@ -87,7 +88,7 @@ void setup() {
   db.readRec(recno, EDB_REC ciphertext[0]);
   int32_t recovered = 0;
   size_t plain_len = 0;
-  int rc = edb_crypto_open_record(KEY, 0, 0, ciphertext, STORED_SIZE,
+  int rc = edb_crypto_open_record(KEY, 0, 1, ciphertext, STORED_SIZE,
                                   (uint8_t *)&recovered, &plain_len);
   Serial.print("open_record rc=");
   Serial.print(rc);
@@ -96,7 +97,7 @@ void setup() {
 
   // Tamper detection: flipping a stored byte makes authentication fail.
   ciphertext[EDB_CRYPTO_NONCE_SIZE] ^= 0x01;
-  rc = edb_crypto_open_record(KEY, 0, 0, ciphertext, STORED_SIZE,
+  rc = edb_crypto_open_record(KEY, 0, 1, ciphertext, STORED_SIZE,
                               (uint8_t *)&recovered, &plain_len);
   Serial.print("after tampering, open_record rc=");
   Serial.print(rc);

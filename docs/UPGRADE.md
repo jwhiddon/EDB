@@ -64,7 +64,7 @@ Restore your backed-up 1.0.6 `EDB.h` and `EDB.cpp`. Data on storage is unaffecte
 
 ## Path 2: 1.0.7 → 2.0.0 (recommended intermediate step)
 
-**Best for:** Projects already on 1.0.7 that are ready for the v2 on-disk format and improved cross-platform support.
+**Best for:** Projects already on 1.0.7 that are ready for **2.0.0 / v3** on-disk format and improved cross-platform support. Legacy v1/v2 files are migration **inputs only** — new `create()` writes v3.
 
 ### Steps
 
@@ -141,7 +141,7 @@ You may skip 1.0.7 if you accept the larger change set in a single upgrade. The 
 | `appendRec()` | `EDB_Rec` | adds `appendRec(rec, &recno)` overload | No — source-compatible |
 | `extern EDB edb` | Declared in header | Still declared (use `#define EDB_NO_GLOBAL` to hide) | No for single-table sketches |
 | On-disk format | Compiler-dependent v1 layout | v3 (redundant CRC header + framed slots) | **Yes** — migrate legacy files offline |
-| `recno` after delete | Renumbers (shift) | **Stable** — ids never renumber; iterate with `firstRec`/`nextRec` | **Yes** |
+| `recno` after delete | Renumbers (shift) | Slot index does not shift; slot may be tombstoned and later reused with new data — use payload `record_id` or `enableStableIds()` for durable identity; iterate with `firstRec`/`nextRec` | **Yes** |
 | `insertRec(recno, …)` | Positional insert (shift) | Allocates a free slot; position **not** preserved | **Yes** |
 | New statuses | — | `EDB_DELETED`, `EDB_CORRUPT`, `EDB_NEEDS_MIGRATION` | Additive |
 | `open()` on legacy DB | opens (maybe wrongly) | `EDB_NEEDS_MIGRATION` | **Yes** |
@@ -182,7 +182,7 @@ Always keep a storage backup taken **before** upgrading to 2.0.0.
 
 ## Related documentation
 
-- [MIGRATION.md](MIGRATION.md) — v1 to v2 file format and migration tool details
+- [MIGRATION.md](MIGRATION.md) — v1/v2 to v3 file format and migration tool details
 - [FORMAT.md](FORMAT.md) — on-disk header layouts
 - [TESTING.md](TESTING.md) — running integrity tests locally
 - [release/1.0.7/README.md](../release/1.0.7/README.md) — drop-in release notes

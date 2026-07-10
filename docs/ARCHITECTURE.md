@@ -5,8 +5,10 @@ EDB (Extended Database Library) is a small sequential record store for Arduino a
 ## Core model
 
 - Records are fixed-size **slots** stored after a redundant, checksummed header.
-- Record numbers are **1-based** and **stable**: `recno` never renumbers, even after deletes.
-- Deleting a record tombstones its slot; the slot id is reused later via a free list.
+- **`recno`** (1-based slot index) addresses a slot for read/update/delete and drives iteration.
+  It is **not** a durable logical id — callers should use a `record_id` field in the payload (or
+  `enableStableIds()` / `findRecById()`).
+- Deleting a record tombstones its slot; the slot may be reused later with new data.
 - Each slot carries a CRC so a torn write is detected (`EDB_CORRUPT`) rather than trusted.
 - Storage backends are pluggable through read/write handlers.
 
@@ -30,14 +32,19 @@ Construct `EDB` with either the byte pair or the buffer pair.
 | `appendRec` | O(1) | Reuses a freed slot or grows |
 | `readRec` | O(1) | Verifies the slot CRC |
 | `updateRec` | O(1) | Rewrites the slot; no header write |
-| `deleteRec` | O(1) | Tombstones the slot (no shifting) |
+| `deleteRec` | O(1) | Tombstones the slot (no shifting); **ring tables:** returns `EDB_ERROR` |
 | `insertRec` | O(1) | Allocates a free slot (position not preserved — see below) |
 | `firstRec` / `nextRec` | O(slots) total | Iterate live records, skipping tombstones |
+| `fifoFirstRec` / `fifoNextRec` | O(slots) total | Ring tables: iterate live records in FIFO (oldest-first) order |
+| `compact` | O(slots) | Reconcile `count()` and free list from tombstones; **ring:** `EDB_ERROR` |
+| `enableRingMode` | O(1) | Append-only ring FIFO; full table overwrites oldest slot |
+| `enableStableIds` / `findRecById` | O(1) enable; O(slots) lookup | Monotonic `record_id` in payload; linear scan by logical id |
 
-Stable slot ids mean `deleteRec`/`insertRec` no longer shift record tails, so they are O(1) and do
-not thrash EEPROM/flash. Because ids are stable, after deletes the live records may be **sparse**:
+Slot addressing means `deleteRec`/`insertRec` no longer shift record tails, so they are O(1) and do
+not thrash EEPROM/flash. After deletes the live records may be **sparse**:
 iterate them with `firstRec()`/`nextRec()` rather than looping `1..count()`. `insertRec` allocates
 any free slot and does **not** preserve positional order (a deliberate 3.0 change); use `appendRec`.
+Ring tables reject `deleteRec` and `compact()` — wipe with `clear()` only.
 
 ## Crash safety
 

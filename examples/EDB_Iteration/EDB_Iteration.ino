@@ -1,11 +1,12 @@
 /*
-  EDB_Iteration — stable slot IDs, tombstone delete, and sparse iteration (EDB v3)
+  EDB_Iteration — slot addressing, tombstone delete, and sparse iteration (EDB v3)
 
-  In v3 a record's recno is a STABLE slot id: it never renumbers. deleteRec() tombstones the slot
-  (O(1)); the id is not reused until a later append fills the gap. Because ids can be sparse after
-  deletes, iterate live records with firstRec()/nextRec() instead of looping 1..count().
+  recno is a 1-based slot index for read/update/delete — not a durable logical record id.
+  deleteRec() tombstones the slot (O(1)); other slots keep their index. A later appendRec
+  may reuse a freed slot with new data. Use rec.id (or enableStableIds()) for durable identity.
+  Iterate live records with firstRec()/nextRec() instead of looping 1..count().
 
-  This sketch uses a plain RAM array as storage so it runs on any board with no extra hardware.
+  RAM-backed storage — runs on any board.
 */
 #include "Arduino.h"
 #include <EDB.h>
@@ -42,14 +43,14 @@ void printLive(const char *label) {
 void setup() {
   Serial.begin(9600);
   while (!Serial) {}
-  Serial.println("EDB v3 stable-slot iteration demo\n");
+  Serial.println("EDB v3 slot iteration demo\n");
 
   if (db.create(0, TABLE_SIZE, sizeof(Rec)) != EDB_OK) {
     Serial.println("create failed");
     return;
   }
 
-  // appendRec(rec, &recno) returns the stable id assigned to the record.
+  // appendRec(rec, &recno) returns the slot index for immediate I/O.
   for (int i = 1; i <= 5; i++) {
     Rec rec = {i, i * 10};
     unsigned long recno = 0;
@@ -61,7 +62,7 @@ void setup() {
   }
   printLive("after appends:");
 
-  // Delete two records. Other records keep their ids; the slots become sparse.
+  // Delete two records. Other slot indices unchanged; table becomes sparse.
   Serial.println("\ndelete recno 2 and 4");
   db.deleteRec(2);
   db.deleteRec(4);
@@ -75,15 +76,15 @@ void setup() {
   Serial.println("  (EDB_DELETED)");
   printLive("after deletes:");
 
-  // A new append reuses one of the freed slots, so the id comes back into use.
+  // appendRec reuses a freed slot; same recno may hold different data afterward.
   Rec more = {99, 999};
   unsigned long reused = 0;
   db.appendRec(EDB_REC more, &reused);
-  Serial.print("\nappend reused recno ");
+  Serial.print("\nappend reused slot recno ");
   Serial.println(reused);
   printLive("after reuse:");
 
-  // compact() reconciles the live count and rebuilds the free list (ids stay stable).
+  // compact() reconciles the live count and rebuilds the free list.
   Serial.println("\ncompact()");
   db.compact();
   printLive("after compact:");

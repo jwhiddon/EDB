@@ -41,7 +41,7 @@ async def test_file_backend_crud(client, tmp_path, monkeypatch):
     r = await client.get(f"/connections/{cid}/tables/0/records?limit=10")
     assert r.json()["data"]["total"] == 1
 
-    # delete leaves a stable-slot tombstone; count drops
+    # delete tombstones the slot; count drops
     r = await client.delete(f"/connections/{cid}/tables/0/records/1")
     assert r.json()["status"] == "EDB_OK"
     r = await client.get(f"/connections/{cid}/tables/0")

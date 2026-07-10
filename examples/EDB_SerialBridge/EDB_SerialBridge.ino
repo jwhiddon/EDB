@@ -440,6 +440,13 @@ static void handleCommand(const char *raw) {
     return;
   }
 
+  if (strcmp(cmd, "compact") == 0) {
+    EDB_Status st = db.compact();
+    if (st == EDB_OK) dbFile.flush();
+    replyErr(id, st);
+    return;
+  }
+
   replyFmt("{\"id\":%ld,\"status\":\"EDB_ERROR\"}", id);
 }
 

@@ -28,16 +28,19 @@ python tools/edb_migrate.py old.db new.db --table-size 16384   # override v3 cap
 
 - Accepts v1 (AVR 12-byte, ESP32 16-byte) and v2 (packed 12-byte) sources.
 - `--arch auto` tries the known v1 layouts and picks the first that validates.
-- Records migrate to **dense stable ids 1..N**. The original record capacity is preserved unless you
-  override it with `--table-size`. Because v3 has a larger header and per-slot CRC, the migrated file
-  is larger than the source — make sure the destination medium has room (use `--table-size` to fit).
+- Records migrate to **dense slots with recno 1..N** at migration time. `recno` is a slot index,
+  not a durable logical record id — use a field in your struct or `enableStableIds()` for that.
+  The original record capacity is preserved unless you override it with `--table-size`. Because v3
+  has a larger header and per-slot CRC, the migrated file is larger than the source — make sure the
+  destination medium has room (use `--table-size` to fit).
 - Writes are **atomic** (temp file + rename), so an interrupted in-place migration
   (`input == output`) cannot corrupt the source.
 
 ## Behavior change to be aware of
 
-v3 record ids are **stable**: after a `deleteRec`, ids do not renumber and the live set can be
-sparse. Iterate with `firstRec()`/`nextRec()` instead of looping `1..count()`, and note that
+v3 uses **slot addressing**: `deleteRec` tombstones a slot without shifting others, so the live set
+can be sparse. Iterate with `firstRec()`/`nextRec()` instead of looping `1..count()`. `recno` is not
+a permanent record name — store a logical id in your payload when you need durable references.
 `insertRec` no longer preserves positional order (it allocates a free slot). See
 [ARCHITECTURE.md](ARCHITECTURE.md) and [API.md](API.md).
 

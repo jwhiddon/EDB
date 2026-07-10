@@ -32,7 +32,7 @@ EDB(EDB_Write_Buffer *write_buffer, EDB_Read_Buffer *read_buffer);
 
 ## `EDB_Status create(unsigned long head_ptr, unsigned long table_size, unsigned int rec_size)`
 
-Creates a new v2 database at `head_ptr`.
+Creates a new v3 database at `head_ptr`.
 
 - Sets `n_recs = 0`.
 - Writes and read-verifies the header.
@@ -42,14 +42,16 @@ Creates a new v2 database at `head_ptr`.
 
 Opens an existing database.
 
-- Detects v2 or legacy v1 headers.
+- Detects legacy v1/v2 headers.
 - Validates flag, sizes, and `n_recs <= limit()`.
 - Returns `EDB_ERROR` for corrupt or unrecognized headers.
 
 ## `EDB_Status appendRec(const EDB_Rec rec)` / `appendRec(const EDB_Rec rec, unsigned long* out_recno)`
 
 Appends a record into a free slot (reused or newly grown), O(1). The optional `out_recno` receives
-the stable id assigned to the record. Returns `EDB_TABLE_FULL` when full.
+the **slot index** for immediate `readRec` / `updateRec` / `deleteRec` — not a durable logical id.
+On normal tables, returns `EDB_TABLE_FULL` when full. On **ring** tables, when full the oldest slot
+is overwritten in place and `EDB_OK` is returned (ring mode never returns `EDB_TABLE_FULL`).
 
 ## `EDB_Status readRec(unsigned long recno, EDB_Rec rec)`
 
@@ -67,13 +69,15 @@ positional order is **not** preserved. Prefer `appendRec`. (Kept for source comp
 
 ## `EDB_Status deleteRec(unsigned long recno)`
 
-Tombstones the record's slot, O(1). The id is not reused until a later `appendRec`, and other
-records keep their ids. Returns `EDB_OUT_OF_RANGE`/`EDB_DELETED` for invalid ids.
+Tombstones the record's slot, O(1). The slot may be reused by a later `appendRec` with different
+data. Returns `EDB_ERROR` on **ring** tables (append-only; use `clear()` to wipe). Returns
+`EDB_OUT_OF_RANGE`/`EDB_DELETED` for invalid ids on normal tables.
 
 ## `unsigned long firstRec()` / `unsigned long nextRec(unsigned long recno)`
 
-Iterate **live** records in id order, skipping tombstones; return `0` when exhausted. Use these
-instead of looping `1..count()` (ids can be sparse after deletes):
+Iterate **live** records in **slot index order**, skipping tombstones; return `0` when exhausted.
+Use these instead of looping `1..count()` (slots can be sparse after deletes). On ring tables,
+prefer `fifoFirstRec()` / `fifoNextRec()` for chronological order.
 
 ```cpp
 for (unsigned long r = db.firstRec(); r != 0; r = db.nextRec(r)) {
@@ -88,7 +92,40 @@ Returns `true` if `recno` is an allocated, non-tombstoned slot.
 ## `EDB_Status compact()`
 
 Reconciles `count()` and rebuilds the free list from tombstones (reclaims slots leaked by a crash).
-Does not move records, so ids stay stable.
+Does not move live records. Returns `EDB_ERROR` on ring tables (use `clear()` instead).
+
+## `EDB_Status enableRingMode()`
+
+Enables fixed-capacity **ring FIFO** mode: append-only, overwrites the oldest record when full.
+`deleteRec` and `compact()` return `EDB_ERROR`. Reset the log with `clear()` (examples often wrap
+this in a local `deleteAll()` helper).
+
+## `bool ringModeEnabled() const`
+
+Returns whether ring FIFO mode is active.
+
+## `unsigned long fifoFirstRec()` / `unsigned long fifoNextRec(unsigned long recno)`
+
+Iterate live records in **FIFO order** (oldest first). Before the ring has wrapped, order matches
+`firstRec()` / `nextRec()`. After wrap, starts at the oldest slot (the next slot to be overwritten).
+
+## `EDB_Status enableStableIds()`
+
+Enables monotonic `record_id` in payload bytes `[0..3]` on each `appendRec` (requires `rec_size >= 4`).
+Your struct should reserve those bytes (e.g. `struct { uint32_t id; ... }`). Existing live records
+with non-zero ids in that field are respected when enabling.
+
+## `bool stableIdsEnabled() const`
+
+Returns whether stable record ids are active for this table.
+
+## `EDB_Status recordId(unsigned long recno, uint32_t* out_id) const`
+
+Returns the stable `record_id` for a live slot when stable ids are enabled.
+
+## `EDB_Status findRecById(uint32_t record_id, unsigned long* out_recno) const`
+
+Linear scan for a live record by stable id; sets `out_recno` to the current slot address.
 
 ## `unsigned int recSize() const`
 
@@ -96,7 +133,9 @@ Returns the stored record size (bytes) of the open table.
 
 ## `EDB_Status clear()`
 
-Re-reads the header and recreates the table with the same `table_size` and `rec_size`, resetting `count()` to 0. Upgrades storage to v2.
+Re-reads the header and recreates the table with the same `table_size` and `rec_size`, resetting
+`count()` to 0 and clearing ring head / `next_record_id` when those modes are enabled. Writes a fresh
+v3 header.
 
 This is a **destructive logical wipe**: it does not securely erase old record bytes from EEPROM/flash/SD — stale data may remain until overwritten. It is not a substitute for migrating a legacy file to v3 when you need to preserve records (use [MIGRATION.md](MIGRATION.md) instead).
 
@@ -168,9 +207,12 @@ You must call `open()` before operating on each table. `count()` always reflects
 
 ## Record numbering rules
 
-- Valid `recno` range for read/update/delete: `1` through `count()`.
+- **`recno`** is a 1-based **slot address** for I/O and iteration — not a durable logical record id.
+  Put `uint32_t id` (or `enableStableIds()`) in your struct for anything you must find again later.
+- Valid `recno` for read/update/delete: allocated slots `1` through `n_slots` that are live (see
+  `isLive()`). After deletes, do not assume `1..count()` covers all live rows — use `firstRec` /
+  `nextRec`.
 - `recno == 0` always returns `EDB_OUT_OF_RANGE`.
-- For insert on a non-empty table: `1` through `count()`.
 
 ## Build flags
 

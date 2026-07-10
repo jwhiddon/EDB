@@ -235,6 +235,97 @@ void test_compact_reconciles() {
     assertLiveSequence(byteDb, {1, 2, 4, 6});
 }
 
+struct IdRecord {
+    uint32_t id;
+    int32_t value;
+};
+
+static IdRecord makeIdRecord(int32_t value) {
+    IdRecord rec = {0, value};
+    return rec;
+}
+
+void test_stable_ids_assigned_on_append() {
+    resetStorage();
+    const unsigned int REC = 8;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TABLE_SIZE, REC));
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.enableStableIds());
+    IdRecord a = makeIdRecord(10);
+    unsigned long r1 = 0;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC a, &r1));
+    uint32_t id1 = 0;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.recordId(r1, &id1));
+    TEST_ASSERT_EQUAL_UINT32(1, id1);
+    TEST_ASSERT_EQUAL_INT(10, a.value);
+
+    IdRecord b = makeIdRecord(20);
+    unsigned long r2 = 0;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC b, &r2));
+    uint32_t id2 = 0;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.recordId(r2, &id2));
+    TEST_ASSERT_EQUAL_UINT32(2, id2);
+
+    unsigned long found = 0;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.findRecById(id2, &found));
+    TEST_ASSERT_EQUAL_UINT32(r2, found);
+}
+
+static unsigned long ringTableSize(unsigned int rec_size, unsigned long max_records) {
+    return EDB_HEADER_SPAN + max_records * (1 + rec_size + 2);
+}
+
+void test_ring_rejects_delete_and_compact() {
+    resetStorage();
+    const unsigned int REC = 4;
+    const unsigned long TSIZE = ringTableSize(REC, 3);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TSIZE, REC));
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.enableRingMode());
+    TestRecord r = makeRecord(1);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC r));
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, byteDb.deleteRec(1));
+    TEST_ASSERT_EQUAL_INT(EDB_ERROR, byteDb.compact());
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.clear());
+    TEST_ASSERT_EQUAL_UINT32(0, byteDb.count());
+}
+
+void test_ring_overwrites_when_full() {
+    resetStorage();
+    const unsigned int REC = 4;
+    const unsigned long TSIZE = ringTableSize(REC, 3);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TSIZE, REC));
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.enableRingMode());
+    for (int v = 1; v <= 4; v++) {
+        TestRecord r = makeRecord(v * 10);
+        TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC r));
+    }
+    TEST_ASSERT_EQUAL_UINT32(3, byteDb.count());
+    TestRecord at0;
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.readRec(1, EDB_REC at0));
+    TEST_ASSERT_EQUAL_INT(40, at0.value);
+}
+
+void test_ring_fifo_iteration() {
+    resetStorage();
+    const unsigned int REC = 4;
+    const unsigned long TSIZE = ringTableSize(REC, 3);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.create(0, TSIZE, REC));
+    TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.enableRingMode());
+    for (int v = 1; v <= 4; v++) {
+        TestRecord r = makeRecord(v * 10);
+        TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.appendRec(EDB_REC r));
+    }
+    std::vector<int32_t> fifo;
+    for (unsigned long r = byteDb.fifoFirstRec(); r != 0; r = byteDb.fifoNextRec(r)) {
+        TestRecord rec;
+        TEST_ASSERT_EQUAL_INT(EDB_OK, byteDb.readRec(r, EDB_REC rec));
+        fifo.push_back(rec.value);
+    }
+    TEST_ASSERT_EQUAL_INT(3, (int)fifo.size());
+    TEST_ASSERT_EQUAL_INT(20, fifo[0]);
+    TEST_ASSERT_EQUAL_INT(30, fifo[1]);
+    TEST_ASSERT_EQUAL_INT(40, fifo[2]);
+}
+
 void test_buffer_delete_does_io() {
     resetStorage();
     TEST_ASSERT_EQUAL_INT(EDB_OK, bufferDb.create(0, TABLE_SIZE, REC_SIZE));
@@ -319,6 +410,10 @@ int run_smoke_tests() {
     RUN_TEST(test_legacy_v1_needs_migration);
     RUN_TEST(test_corrupt_record_detected);
     RUN_TEST(test_compact_reconciles);
+    RUN_TEST(test_stable_ids_assigned_on_append);
+    RUN_TEST(test_ring_rejects_delete_and_compact);
+    RUN_TEST(test_ring_overwrites_when_full);
+    RUN_TEST(test_ring_fifo_iteration);
     RUN_TEST(test_buffer_delete_does_io);
     RUN_TEST(test_next_table_offset);
     RUN_TEST(test_open_or_create);

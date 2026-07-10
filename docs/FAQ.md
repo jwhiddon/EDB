@@ -23,6 +23,8 @@ rec.temperature = 72;
 db.updateRec(recno, EDB_REC rec);
 ```
 
+See [examples/EDB_ReadModifyWrite](../examples/EDB_ReadModifyWrite/).
+
 ## How do I use multiple tables?
 
 `head_ptr` is a **byte offset** in storage, not a table index. Space tables so they do not overlap:
@@ -41,7 +43,7 @@ See [API.md](API.md) (Multiple tables) and [examples/EDB_MultiTable](../examples
 
 ## Why is `insertRec(1, …)` so slow on SPIFFS/SD?
 
-Insert and delete shift trailing records — O(n) per operation. On flash storage each shift rewrites many bytes. Prefer `appendRec()` for logging. Use the optimized examples with buffer handlers. Avoid demo loops that insert at position 1 repeatedly.
+Insert and delete shift trailing records — O(n) per operation on legacy v1/v2 layouts. In **v3**, `deleteRec` and `insertRec` are O(1) slot operations, but random inserts are still uncommon for logging. Prefer `appendRec()` for logging. See [EDB_AppendOnlyLogger](../examples/EDB_AppendOnlyLogger/).
 
 ## Why do ESP8266/ESP32 EEPROM examples return zeros?
 
@@ -59,9 +61,20 @@ Arduino `FILE_WRITE` includes `O_APPEND`, which breaks `seek()`. Open with `O_RE
 
 Plain POD structs work if `sizeof()` is stable on your target. Avoid pointers, virtual methods, and platform-dependent padding surprises. When in doubt, use fixed-width types (`uint32_t`, etc.).
 
+## Should I store `recno` and look up records later?
+
+No — **`recno` is a slot handle**, not a permanent record name. It goes stale when the slot is
+reused after delete, overwritten in a ring/FIFO table, or repacked by host `edb_vacuum.py`.
+
+Put a **`uint32_t id`** (or similar) in your record struct, or call `enableStableIds()` and use
+`findRecById()`. Use `fifoFirstRec()` / `fifoNextRec()` on ring tables for oldest-first order.
+
+**Ring tables:** `enableRingMode()` is append-only — `deleteRec` returns `EDB_ERROR`. Wipe with
+`clear()` (many examples define a local `deleteAll()` that calls `clear()`).
+
 ## How do I change the record schema?
 
-There is no in-place schema migration. Create a new table, migrate records in application code, or use `clear()` and start fresh (data loss).
+There is no in-place schema migration. Create a new table, migrate records in application code, or use `clear()` and start fresh (data loss). See [examples/EDB_SchemaRotation](../examples/EDB_SchemaRotation/).
 
 ## Why does the SPIFFS example trigger watchdog resets?
 
@@ -70,6 +83,14 @@ Byte-mode handlers with `flush()` on every byte block the CPU for long inserts. 
 ## Can I read a `.db` file on my PC?
 
 Copy the file from SD/SPIFFS and use [tools/edb_migrate.py](../tools/edb_migrate.py) to inspect or convert format. For live export, use the [EDB Gateway](GATEWAY.md) or read records over serial in your sketch.
+
+## My table is full (`EDB_TABLE_FULL`). Can I add capacity?
+
+On the device, `table_size` is fixed at `create()` time. Grow the file on a PC with [tools/edb_grow.py](../tools/edb_grow.py), then copy it back and update your sketch (`table_size`, `storage[]` size, and any downstream `head_ptr` if you use multiple tables). Example:
+
+```bash
+python tools/edb_grow.py sensor.db sensor-big.db --add-slots 20 --force
+```
 
 ## What are `e2e_blind` and `device_autonomous` encryption?
 

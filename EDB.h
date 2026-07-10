@@ -5,8 +5,8 @@
 
   v3 storage format (EDB 3.x):
     - Redundant, CRC32-checksummed header written ping-pong for atomic, crash-safe updates.
-    - Stable slot IDs: recno never renumbers. deleteRec tombstones a slot (O(1)); appendRec
-      reuses a freed slot via an intrusive free-list (O(1)) or grows the table.
+    - Slot-addressed records: recno is a 1-based slot index for I/O and iteration, not a durable id.
+    - deleteRec tombstones a slot (O(1)); appendRec reuses via free-list or grows n_slots.
     - Per-record CRC16 detects torn writes / bit-rot; verified on read by default.
     - Records are opaque to the library; encryption (if any) is a caller concern.
   Legacy v1/v2 files are detected on open() and reported as EDB_NEEDS_MIGRATION; convert them
@@ -35,6 +35,16 @@
 
 /* Sentinel for "no free slot". */
 #define EDB_FREE_NONE 0xFFFFFFFFUL
+
+/* Header flags (EDB_Header.flags, little-endian uint16). */
+#define EDB_HDR_ENCRYPTED  0x0001  /* informational: records may be encrypted */
+#define EDB_HDR_STABLE_IDS 0x0002  /* payload[0..3] is a monotonic record_id; see recordId() */
+#define EDB_HDR_RING       0x0004  /* FIFO ring: append-only, overwrite oldest when full */
+
+/* When EDB_HDR_STABLE_IDS is set, reserved[0..3] holds next_record_id (LE32). */
+#define EDB_STABLE_ID_OFFSET 0  /* byte offset within each record payload */
+/* When EDB_HDR_RING is set, reserved[4..7] holds ring_head (LE32, next slot to write). */
+#define EDB_RING_HEAD_OFFSET 4
 
 /* Verify each record's CRC on read (1) or trust it (0, minimum read CPU). */
 #ifndef EDB_VERIFY_ON_READ
@@ -109,6 +119,16 @@ class EDB {
     unsigned long nextRec(unsigned long recno);
     bool isLive(unsigned long recno);
     EDB_Status compact();
+    /* Fixed-capacity FIFO ring: append-only, overwrites oldest when full. No per-record delete. */
+    EDB_Status enableRingMode();
+    bool ringModeEnabled() const;
+    unsigned long fifoFirstRec();
+    unsigned long fifoNextRec(unsigned long recno);
+    /* Enable monotonic record_id in the first 4 bytes of each payload (requires rec_size >= 4). */
+    EDB_Status enableStableIds();
+    bool stableIdsEnabled() const;
+    EDB_Status recordId(unsigned long recno, uint32_t* out_id) const;
+    EDB_Status findRecById(uint32_t record_id, unsigned long* out_recno) const;
     unsigned long limit();
     unsigned long count();
     EDB_Status clear();
@@ -144,6 +164,13 @@ class EDB {
     unsigned long allocSlot();                 /* returns slot index, or EDB_FREE_NONE if full */
     EDB_Status writeSlot(unsigned long index, const byte* payload);
     EDB_Status readSlot(unsigned long index, byte* payload);  /* verifies status + crc */
+    uint32_t readNextRecordId() const;
+    void writeNextRecordId(uint32_t id);
+    uint32_t peekRecordId(const byte* payload) const;
+    void stampRecordId(byte* payload, uint32_t id) const;
+    uint32_t readRingHead() const;
+    void writeRingHead(uint32_t head);
+    bool ringIsFull() const;
 
     void* edbMalloc(unsigned int size);
 };
