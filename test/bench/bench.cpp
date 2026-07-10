@@ -9,8 +9,9 @@
              i.e. what an EEPROM.update() handler would physically commit)
     reads  : calls to the byte read handler
 
-  A realistic sensor-log dataset is generated up front from a fixed seed, so every version under
-  test writes byte-for-byte identical records. The dataset's FNV-1a hash is printed to prove it.
+  The dataset is NOT generated here: it is loaded from test/data/sensorlog.bin (see
+  tools/gen_datasets.py), so every version under test writes byte-for-byte identical records and the
+  data is independently verifiable. The FNV-1a hash of the loaded records is printed.
 
   Build/run with test/bench/run.sh. See docs/BENCHMARK.md.
 */
@@ -20,69 +21,39 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
-/* ---------------------------------------------------------------- record + dataset */
-
+/* Packed 22-byte record; must match tools/gen_datasets.py (REC_FMT "<IIhHBB8s"). */
 struct __attribute__((packed)) SensorRec {
-  uint32_t id;        // logical record id (monotonic)
-  uint32_t ts;        // unix seconds, mostly increasing
-  int16_t  temp_c100; // centi-degrees C
-  uint16_t humidity;  // 0..10000
-  uint8_t  status;    // flag bits
-  uint8_t  channel;   // 0..7
-  char     tag[8];    // fixed-width name, not necessarily NUL-terminated
+  uint32_t id;
+  uint32_t ts;
+  int16_t  temp_c100;
+  uint16_t humidity;
+  uint8_t  status;
+  uint8_t  channel;
+  char     tag[8];
 };
-
 #define REC_SIZE ((unsigned int)sizeof(SensorRec))
 
-static uint32_t rng_state = 0x1234abcdu;
-static uint32_t rnd() {
-  uint32_t x = rng_state;
-  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-  return rng_state = x;
-}
-
-static const char *TAGS[8] = {"kitchen", "garage", "attic", "cellar", "porch", "shed", "office", "lab"};
-
-// Fresh readings: id/tag/channel are stable, ts/temp/humidity/status vary (a realistic sensor log).
-static void genDataset(std::vector<SensorRec> &out, unsigned long n, uint32_t seed) {
-  rng_state = seed;
-  out.resize(n);
-  for (unsigned long i = 0; i < n; i++) {
-    SensorRec r;
-    memset(&r, 0, sizeof(r));
-    r.id = (uint32_t)(1000 + i);
-    r.ts = 1700000000u + (uint32_t)(i * 10) + (rnd() % 7);
-    r.temp_c100 = (int16_t)(500 + (int)(rnd() % 2000));
-    r.humidity = (uint16_t)(3000 + (rnd() % 5000));
-    r.status = (uint8_t)(rnd() & 0x0F);
-    r.channel = (uint8_t)(i % 8);
-    size_t tl = strlen(TAGS[i % 8]);
-    if (tl > sizeof(r.tag)) tl = sizeof(r.tag);
-    memcpy(r.tag, TAGS[i % 8], tl);
-    out[i] = r;
-  }
-}
-
-// A later reading from the same sensor: same id/tag/channel, new ts/temp/humidity/status.
-// This is what an updateRec() really looks like, and only a few bytes change.
-static void genUpdates(const std::vector<SensorRec> &base, std::vector<SensorRec> &out, uint32_t seed) {
-  rng_state = seed;
-  out = base;
-  for (size_t i = 0; i < out.size(); i++) {
-    out[i].ts += 3600 + (rnd() % 60);
-    out[i].temp_c100 = (int16_t)(500 + (int)(rnd() % 2000));
-    out[i].humidity = (uint16_t)(3000 + (rnd() % 5000));
-    out[i].status = (uint8_t)(rnd() & 0x0F);
-  }
-}
-
-static uint64_t fnv1a(const void *data, size_t len) {
+static uint64_t fnv1a(const void *data, size_t len) {   // matches tools/gen_datasets.py fnv1a64
   const unsigned char *p = (const unsigned char *)data;
-  uint64_t h = 1469598103934665603ULL;
-  for (size_t i = 0; i < len; i++) { h ^= p[i]; h *= 1099511628211ULL; }
+  uint64_t h = 0xCBF29CE484222325ULL;
+  for (size_t i = 0; i < len; i++) { h ^= p[i]; h *= 0x100000001B3ULL; }
   return h;
+}
+
+static std::vector<SensorRec> loadRecords(const std::string &path) {
+  FILE *f = fopen(path.c_str(), "rb");
+  if (!f) { fprintf(stderr, "FATAL: cannot open %s\n", path.c_str()); exit(2); }
+  fseek(f, 0, SEEK_END);
+  long n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (n < 0 || (n % (long)REC_SIZE) != 0) { fprintf(stderr, "FATAL: %s not a multiple of %u\n", path.c_str(), REC_SIZE); exit(2); }
+  std::vector<SensorRec> v((size_t)n / REC_SIZE);
+  if (n && fread(v.data(), 1, (size_t)n, f) != (size_t)n) { fprintf(stderr, "FATAL: short read %s\n", path.c_str()); exit(2); }
+  fclose(f);
+  return v;
 }
 
 /* ---------------------------------------------------------------- instrumented storage */
@@ -124,24 +95,27 @@ static unsigned long appendIdx(unsigned long i) {
 }
 
 int main(int argc, char **argv) {
-  unsigned long N = (argc > 1) ? strtoul(argv[1], 0, 10) : 10000;
+  std::string data_dir = (argc > 1) ? argv[1] : "test/data";
   unsigned long K = (argc > 2) ? strtoul(argv[2], 0, 10) : 16;
 
-  genDataset(g_data, N + K + 64, 0x1234abcdu);
-  genUpdates(g_data, g_upd, 0x77aa55ffu);
+  g_data = loadRecords(data_dir + "/sensorlog.bin");
+  g_upd = loadRecords(data_dir + "/sensorlog_updates.bin");
 
-  const unsigned long stride = REC_SIZE + 3;                 // v3 slot framing; roomy for 1.0.x
-  const unsigned long TABLE = 256 + (N + K + 64) * stride;
+  const unsigned long RESERVE = K + 64;                      // tail records for the mutation probes
+  if (g_data.size() <= RESERVE) { fprintf(stderr, "FATAL: dataset too small\n"); return 2; }
+  const unsigned long N = (unsigned long)g_data.size() - RESERVE;
+
+  const unsigned long stride = REC_SIZE + 3;
+  const unsigned long TABLE = 256 + (unsigned long)g_data.size() * stride;
   store.assign(TABLE, 0xFF);
 
   printf("\n=== %s ===\n", VERSION_NAME);
-  printf("N=%lu K=%lu rec_size=%u table=%lu bytes  dataset_fnv1a=%016llx\n",
-         N, K, REC_SIZE, TABLE,
-         (unsigned long long)fnv1a(&g_data[0], g_data.size() * sizeof(SensorRec)));
+  printf("dataset=%s/sensorlog.bin  loaded=%zu recs  N=%lu K=%lu rec_size=%u  fnv1a=%016llx\n",
+         data_dir.c_str(), g_data.size(), N, K, REC_SIZE,
+         (unsigned long long)fnv1a(g_data.data(), g_data.size() * sizeof(SensorRec)));
 
   // Each write phase starts from ERASED storage (0xFF): the realistic first-write case, where
-  // eff_w equals the real number of EEPROM cells written. Re-appending the same bytes into the
-  // same physical slots would make eff_w meaninglessly small.
+  // eff_w equals the real number of EEPROM cells written.
   auto freshTable = [&]() { store.assign(TABLE, 0xFF); db.create(0, TABLE, REC_SIZE); };
 
   store.assign(TABLE, 0xFF);
@@ -167,8 +141,6 @@ int main(int argc, char **argv) {
   start(); for (unsigned long i = 1; i <= N; i++) db.updateRec(i, (EDB_Rec)&g_upd[i - 1]); M mUpd = stop();
 
   // "Remove the first (oldest) live record, K times."
-  //   shift-based: deleteRec(1) -- every call shifts the whole tail down.
-  //   v3:          firstRec() then tombstone the slot.
   start();
 #ifdef EDB_VERSION
   for (unsigned long i = 0; i < K; i++) { unsigned long r = db.firstRec(); db.deleteRec(r); }

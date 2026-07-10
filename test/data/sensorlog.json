@@ -1,0 +1,105 @@
+{
+  "description": "EDB test dataset: realistic sensor log, deterministic from a fixed seed",
+  "record_format": "<IIhHBB8s",
+  "record_size": 22,
+  "count": 10000,
+  "fields": [
+    {
+      "name": "id",
+      "type": "uint32",
+      "offset": 0
+    },
+    {
+      "name": "ts",
+      "type": "uint32",
+      "offset": 4
+    },
+    {
+      "name": "temp_c100",
+      "type": "int16",
+      "offset": 8
+    },
+    {
+      "name": "humidity",
+      "type": "uint16",
+      "offset": 10
+    },
+    {
+      "name": "status",
+      "type": "uint8",
+      "offset": 12
+    },
+    {
+      "name": "channel",
+      "type": "uint8",
+      "offset": 13
+    },
+    {
+      "name": "tag",
+      "type": "char[8]",
+      "offset": 14
+    }
+  ],
+  "tags": [
+    "kitchen",
+    "garage",
+    "attic",
+    "cellar",
+    "porch",
+    "shed",
+    "office",
+    "lab"
+  ],
+  "seed_base": 305441741,
+  "seed_update": 2007651839,
+  "files": {
+    "records": {
+      "name": "sensorlog.bin",
+      "bytes": 220000,
+      "fnv1a64": "c99642ae0d309448"
+    },
+    "updates": {
+      "name": "sensorlog_updates.bin",
+      "bytes": 220000,
+      "fnv1a64": "693a04c8f352e153"
+    }
+  },
+  "samples": {
+    "records[0]": {
+      "id": 1000,
+      "ts": 1700000006,
+      "temp_c100": 1181,
+      "humidity": 4030,
+      "status": 12,
+      "channel": 0,
+      "tag": "kitchen"
+    },
+    "records[1]": {
+      "id": 1001,
+      "ts": 1700000012,
+      "temp_c100": 1834,
+      "humidity": 4079,
+      "status": 2,
+      "channel": 1,
+      "tag": "garage"
+    },
+    "records[last]": {
+      "id": 10999,
+      "ts": 1700099996,
+      "temp_c100": 1863,
+      "humidity": 3185,
+      "status": 14,
+      "channel": 7,
+      "tag": "lab"
+    },
+    "updates[0]": {
+      "id": 1000,
+      "ts": 1700003615,
+      "temp_c100": 1244,
+      "humidity": 7346,
+      "status": 13,
+      "channel": 0,
+      "tag": "kitchen"
+    }
+  }
+}

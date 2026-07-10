@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Build and run the EDB storage benchmark.
 #
-#   ./run.sh [N] [K]     e.g. ./run.sh 1024 16
+#   ./run.sh            use the shipped test/data/sensorlog.bin (10,000 records)
+#   ./run.sh 100000     regenerate a 100,000-record dataset in a temp dir and run against it
+#                       (the shipped test/data files are never overwritten)
 #
-# Compares, on the same logical workload:
-#   * EDB 1.0.7 (release/1.0.7)          -- shift-based; byte-for-byte identical I/O to 1.0.6
+# Compares, on the same logical workload against identical record bytes:
+#   * EDB 1.0.7 (release/1.0.7)                    -- shift-based
 #   * EDB 2.0.0 with EDB_WRITE_IF_DIFFERENT=0
 #   * EDB 2.0.0 with EDB_WRITE_IF_DIFFERENT=1 (default)
 #
@@ -17,8 +19,16 @@ ROOT="$HERE/../.."
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
-N="${1:-10000}"
-K="${2:-16}"      # mutations (delete/insert probes)
+COUNT="${1:-}"
+K="${2:-16}"
+
+if [ -n "$COUNT" ]; then
+  DATA="$OUT/data"
+  python "$ROOT/tools/gen_datasets.py" --count "$COUNT" --out "$DATA"
+else
+  DATA="$ROOT/test/data"
+fi
+
 FLAGS="-std=c++11 -O2 -I$ROOT/test/support"
 
 echo "building..."
@@ -34,6 +44,6 @@ echo "building..."
   -DVERSION_NAME='"EDB 2.0.0 (write-if-different ON)"' \
   "$HERE/bench.cpp" "$ROOT/EDB.cpp" -o "$OUT/b200"
 
-"$OUT/b107" "$N" "$K"
-"$OUT/b200_nowid" "$N" "$K"
-"$OUT/b200" "$N" "$K"
+"$OUT/b107" "$DATA" "$K"
+"$OUT/b200_nowid" "$DATA" "$K"
+"$OUT/b200" "$DATA" "$K"

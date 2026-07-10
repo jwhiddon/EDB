@@ -3,14 +3,18 @@
 Reproduce with:
 
 ```bash
-./test/bench/run.sh 10000 16     # N records, K mutations
-./test/bench/run.sh 100000 16
+./test/bench/run.sh            # shipped test/data/sensorlog.bin (10,000 records)
+./test/bench/run.sh 100000     # regenerate 100k in a temp dir, run against it
 ```
 
-The harness generates a realistic sensor-log dataset up front from a fixed seed — a 22-byte record
-with `id`, timestamp, temperature, humidity, status flags, channel, and an 8-char tag, with
-per-record varying fields. Every version under test writes byte-for-byte identical records; the run
-prints the dataset's FNV-1a hash so you can confirm all three saw the same bytes.
+The dataset is **not generated in the benchmark** — it is a shipped, verifiable file. A 22-byte
+record (`id`, timestamp, temperature, humidity, status flags, channel, 8-char tag with per-record
+varying fields) is produced deterministically by [`tools/gen_datasets.py`](../tools/gen_datasets.py)
+into `test/data/sensorlog.bin` (+ `sensorlog_updates.bin` and a `sensorlog.json` manifest with the
+schema and FNV-1a hashes). Every version under test loads the same file, so they write byte-for-byte
+identical records; the run prints the FNV-1a hash, which matches the manifest (and
+`tools/test_datasets.py` guards the shipped files against drift). `./run.sh <count>` regenerates a
+different size in a temp dir without touching the shipped files.
 
 ## What is measured
 
