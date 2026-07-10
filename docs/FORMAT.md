@@ -123,3 +123,33 @@ Two 4-byte records (`rec_size = 4`, `slot_stride = 7`, `data_offset = 96`):
 
 The core library is encryption-agnostic: an encrypted record is just an opaque payload whose
 `rec_size` already accounts for the crypto envelope. See [ENCRYPTION.md](ENCRYPTION.md).
+
+## Legacy v1/v2 headers and portability
+
+v3 defines every on-disk integer as an explicit fixed-width little-endian type (`uint32_t`,
+`uint16_t`). A v3 file is therefore **byte-identical and portable** across 8-bit AVR, 32-bit cores
+(ESP32/ESP8266/SAMD/RP2040/STM32), and the host tools — the same bytes open everywhere, and no
+`--arch` hint is ever needed to read one.
+
+The legacy **v1** format was *not* portable, because it declared `table_size` as a C `unsigned int`,
+whose width is architecture-dependent:
+
+| Format | `table_size` width | Max `table_size` | Header size |
+|--------|--------------------|------------------|-------------|
+| v1 on 8-bit AVR | **16-bit** | 65,535 B (~64 KB) | 12 B |
+| v1 on 32-bit cores | 32-bit | ~4 GB | 16 B |
+| v2 | 32-bit | ~4 GB | 12 B |
+| v3 | 32-bit | ~4 GB | 48 B ×2 |
+
+- The 16-bit field exists **only on classic 8-bit AVR** — ATmega328P (Uno/Nano/Pro Mini), ATmega2560
+  (Mega), ATmega32U4 (Leonardo/Micro) — where `unsigned int` is 2 bytes. On any 32-bit core the
+  *same* v1 source compiled `table_size` to 4 bytes (and the header to 16 bytes instead of 12).
+- Because the layout depends on the compiler's `int` width, a v1 file written on AVR is not readable
+  as-is on ESP32 and vice versa. This is why [`edb_migrate.py`](../tools/edb_migrate.py) needs
+  `--arch avr|esp32` (or `--arch auto`) to parse a v1 source — see [MIGRATION.md](MIGRATION.md).
+- Consequently a v1 AVR table cannot exceed ~64 KB total: `floor((65535 − 12) / rec_size)` records —
+  e.g. **2,978** records at a 22-byte `rec_size`. v2 and v3 use a 32-bit `table_size` on every
+  architecture, so this ceiling does not apply to them.
+
+v3 removes the ambiguity by design: fixed-width types mean the header is the same on every MCU and
+the 16-bit limit is gone.

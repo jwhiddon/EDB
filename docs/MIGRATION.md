@@ -28,6 +28,11 @@ python tools/edb_migrate.py old.db new.db --table-size 16384   # override v3 cap
 
 - Accepts v1 (AVR 12-byte, ESP32 16-byte) and v2 (packed 12-byte) sources.
 - `--arch auto` tries the known v1 layouts and picks the first that validates.
+- **Why `--arch` is needed:** the v1 header layout depends on the compiler's `int` width, so an AVR
+  v1 file (12-byte header, 16-bit `table_size`, ~64 KB max) and an ESP32 v1 file (16-byte header,
+  32-bit `table_size`) are not interchangeable. `--arch` (or `auto`) tells the tool which to expect.
+  v3 uses fixed-width types and is portable across all cores, so nothing needs `--arch` to read it.
+  Details in [FORMAT.md](FORMAT.md#legacy-v1v2-headers-and-portability).
 - Records migrate to **dense slots with recno 1..N** at migration time. `recno` is a slot index,
   not a durable logical record id — use a field in your struct or `enableStableIds()` for that.
   The original record capacity is preserved unless you override it with `--table-size`. Because v3
