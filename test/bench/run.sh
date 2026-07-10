@@ -17,8 +17,8 @@ ROOT="$HERE/../.."
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
-N="${1:-1024}"
-K="${2:-16}"
+N="${1:-10000}"
+K="${2:-16}"      # mutations (delete/insert probes)
 FLAGS="-std=c++11 -O2 -I$ROOT/test/support"
 
 echo "building..."
