@@ -173,6 +173,7 @@ def _pack_header(h: Header) -> bytes:
     struct.pack_into("<H", buf, 28, h.data_offset)
     reserved = bytearray(h.reserved[:14].ljust(14, b"\x00"))
     struct.pack_into("<I", reserved, 0, h.next_record_id)
+    struct.pack_into("<I", reserved, 4, h.ring_head)
     buf[30:44] = reserved
     struct.pack_into("<I", buf, 44, crc32_edb(bytes(buf[0:44])))
     return bytes(buf)

@@ -16,7 +16,7 @@ Push-Location $PSScriptRoot
 try {
     python ..\tools\generate_fixtures.py
     & $compiler -std=c++11 -Wall -Wextra -I../ -Isupport -DEDB_TEST -DEDB_ENABLE_CRYPTO `
-        test_main.cpp test_dbs.cpp test_edb.cpp test_edb_integrity.cpp test_api_compat.cpp `
+        test_main.cpp test_dbs.cpp test_edb.cpp test_edb_integrity.cpp test_edb_edge.cpp test_api_compat.cpp `
         test_crypto.cpp test_crypto_header.cpp test_crypto_integrity.cpp test_crypto_blind.cpp test_compile_flags.cpp `
         ../EDB.cpp ../EDB_Crypto.cpp support/unity.c `
         -o test_edb.exe

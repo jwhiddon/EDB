@@ -32,6 +32,7 @@ Requirements: `g++` with C++11 support.
 | Suite | File | Purpose |
 |-------|------|---------|
 | Smoke | `test_edb.cpp` | Core API validation, stable ids, ring FIFO (`fifoFirstRec`/`fifoNextRec`) |
+| Edge / scale | `test_edb_edge.cpp` | Large tables (4k+ records, 1 MiB capacity), sparse tombstones, ring wrap, large payloads |
 | Data integrity | `test_edb_integrity.cpp` | Full-table record preservation |
 | Code integrity | `test_api_compat.cpp` | Regression cases + golden fixtures |
 | Crypto | `test_crypto.cpp` | AEAD round-trip, wrong key |
@@ -80,8 +81,8 @@ EDB_GATEWAY_INSECURE=1 pytest -m serial   # when serial tests are added
 python -m unittest discover -s tools -p "test_*.py"
 ```
 
-Covers migration (`test_edb_migrate`), vacuum/repack (`test_edb_vacuum`), and grow (`test_edb_grow`):
-record-region preservation, full-table migration, padding checks, remap JSON, and table-size growth.
+Covers migration (`test_edb_migrate`), vacuum/repack (`test_edb_vacuum`), grow (`test_edb_grow`), and
+large-file edge cases (`test_edb_edge`): 20k-slot sparse tables, megabyte grow, multi-table scan.
 
 ## Arduino compile check
 

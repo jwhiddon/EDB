@@ -5,6 +5,7 @@
 
 int run_smoke_tests();
 int run_integrity_tests();
+int run_edge_tests();
 int run_compat_tests();
 int run_crypto_tests();
 int run_crypto_header_tests();
@@ -20,6 +21,8 @@ int main() {
     failures += run_smoke_tests();
     printf("SUITE integrity (failures so far: %d)\n", failures);
     failures += run_integrity_tests();
+    printf("SUITE edge (failures so far: %d)\n", failures);
+    failures += run_edge_tests();
     printf("SUITE compat (failures so far: %d)\n", failures);
     failures += run_compat_tests();
     printf("SUITE crypto (failures so far: %d)\n", failures);

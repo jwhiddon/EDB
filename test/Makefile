@@ -2,7 +2,7 @@ CXX ?= g++
 CXXFLAGS ?= -std=c++11 -Wall -Wextra -Isupport
 LDFLAGS ?=
 
-TEST_SRCS = test_main.cpp test_dbs.cpp test_edb.cpp test_edb_integrity.cpp test_api_compat.cpp \
+TEST_SRCS = test_main.cpp test_dbs.cpp test_edb.cpp test_edb_integrity.cpp test_edb_edge.cpp test_api_compat.cpp \
   test_crypto.cpp test_crypto_header.cpp test_crypto_integrity.cpp test_crypto_blind.cpp test_compile_flags.cpp \
   support/unity.c
 CRYPTO_SRCS = ../EDB_Crypto.cpp
