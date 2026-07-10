@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## 2.0.0
 
+> **Pre-release (alpha).** 2.0.0 is being staged as a pre-release (`v2.0.0-alpha.1`) while the v3
+> format and the gateway settle. The on-disk format and APIs may still change before the final
+> 2.0.0. Not yet recommended for production; pin a specific alpha tag if you depend on it.
+
 This is a format-breaking release. The on-disk layout is now v3: a redundant, checksummed
 "superblock" header plus framed, individually checksummed record slots. Deletes and inserts are
 O(1), power loss can no longer silently corrupt a table, and torn writes and bit-rot are detected
