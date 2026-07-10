@@ -7,6 +7,13 @@ All notable changes to this project are documented here.
 > **Pre-release (alpha).** 2.0.0 is being staged as a pre-release (`v2.0.0-alpha.1`) while the v3
 > format and the gateway settle. The on-disk format and APIs may still change before the final
 > 2.0.0. Not yet recommended for production; pin a specific alpha tag if you depend on it.
+>
+> **Known limitations (alpha).** Crash-safety is designed-in — slot bytes are written before the
+> header that publishes them, the status byte last, behind a dual-CRC32 header — but is not yet
+> exercised by fault-injection ("torn write") tests. At-rest record encryption is not yet
+> cross-validated between the C++ and Python implementations (the shared vector file is not loaded by
+> a test; the gateway is a blind ciphertext relay holding no keys); the serial transport session
+> *is* cross-validated. These are tracked for a later alpha.
 
 This is a format-breaking release. The on-disk layout is now v3: a redundant, checksummed
 "superblock" header plus framed, individually checksummed record slots. Deletes and inserts are
@@ -91,13 +98,15 @@ The previous encryption and gateway shipped with exploitable weaknesses; the not
 each change fixes.
 
 - **Real per-record AEAD (`EDB_Crypto.h`)** — the old scheme used one MAC key for every record with
-  no binding to a record's location, so an attacker could swap or replay ciphertexts between slots
+  no binding to a record's identity, so an attacker could swap or replay ciphertexts between records
   and they would still verify; it reused the nonce on in-place updates (a two-time-pad keystream
   reuse); its "Poly1305" was actually a truncated secret-prefix SHA-256; and it compared tags with
-  variable-time `memcmp` (a timing oracle). v3's per-slot `gen` counter made a real fix possible:
-  RFC-8439 ChaCha20-Poly1305 with a fresh per-record nonce carried in the payload, AAD binding record
-  identity and location (swap/replay now fails verification), a real Poly1305 tag, and constant-time
-  comparison.
+  variable-time `memcmp` (a timing oracle). v3 replaces it with RFC-8439 ChaCha20-Poly1305: a fresh
+  random per-record nonce carried in the payload (so no two writes ever share keystream), AAD binding
+  the record's logical identity (`table_id` and `record_id`) so a ciphertext can't be swapped to a
+  different record and still verify, a real Poly1305 tag, and constant-time comparison. Reordering
+  ciphertexts *within* a table is authenticated only when you use stable record ids — see
+  [docs/ENCRYPTION.md](docs/ENCRYPTION.md).
 - **Auth on every gateway route** — routes previously had no authentication at all. Now every route
   requires an API key compared with `hmac.compare_digest`.
 - **CORS allowlist + Host-header check** — with no CORS policy, any web page could drive the gateway,
