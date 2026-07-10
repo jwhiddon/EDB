@@ -73,6 +73,30 @@ void test_open_migrated_v3_fixture() {
 #endif
 }
 
+// Realistic migration: the shipped sensor records (22-byte, varied bytes in every field) migrated
+// v1 AVR -> v3 must open on the device and read back byte-for-byte identical to test/data/sensorlog.bin.
+// Exercises migration, slot framing, and the per-slot CRC16 on non-trivial data.
+void test_migrated_sensor_records_survive() {
+#if EDB_VERSION
+    std::vector<uint8_t> v3, src;
+    if (!loadFixtureFile("fixtures/v3_sensor_avr_64rec.db", v3) ||
+        !loadFixtureFile("data/sensorlog.bin", src)) {
+        printf("SKIP realistic migration fixture not found (run gen_datasets.py + generate_fixtures.py)\n");
+        return;
+    }
+    resetStorage();
+    FakeStorage::instance().load(v3);
+    TEST_ASSERT_EQUAL_INT(EDB_OK, compatDb.open(0));
+    TEST_ASSERT_EQUAL_UINT32(64, compatDb.count());
+    const unsigned int rs = 22;
+    for (unsigned long i = 0; i < 64; i++) {
+        uint8_t got[22];
+        TEST_ASSERT_EQUAL_INT(EDB_OK, compatDb.readRec(i + 1, (EDB_Rec)got));
+        TEST_ASSERT_EQUAL_UINT8_ARRAY(&src[i * rs], got, (int)rs);
+    }
+#endif
+}
+
 void test_api_symbols_present() {
     TEST_ASSERT_TRUE(true);
 }
@@ -85,6 +109,7 @@ int run_compat_tests() {
     RUN_TEST(test_open_master_avr_fixture);
     RUN_TEST(test_open_master_esp32_fixture);
     RUN_TEST(test_open_migrated_v3_fixture);
+    RUN_TEST(test_migrated_sensor_records_survive);
     RUN_TEST(test_api_symbols_present);
     return UNITY_END();
 }

@@ -7,6 +7,8 @@ from edb_gateway.edb_v3 import CORRUPT, DELETED, OK, HEADER_SPAN, EdbV3File
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 C_FIXTURE = REPO_ROOT / "test" / "fixtures" / "v3_migrated_avr_8rec.db"
+SENSOR_BIN = REPO_ROOT / "test" / "data" / "sensorlog.bin"
+V3_SENSOR = REPO_ROOT / "test" / "fixtures" / "v3_sensor_avr_64rec.db"
 
 
 def test_roundtrip(tmp_path):
@@ -51,3 +53,18 @@ def test_reads_c_format_fixture():
     assert db.count(0) == 8
     values = [struct.unpack("<i", db.read_rec(0, r)[1])[0] for r in range(1, 9)]
     assert values == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+@pytest.mark.skipif(not (V3_SENSOR.exists() and SENSOR_BIN.exists()),
+                    reason="run tools/gen_datasets.py then tools/generate_fixtures.py")
+def test_reads_realistic_migrated_records():
+    # Realistic sensor records migrated v1 -> v3 must read back byte-for-byte identical to the
+    # shipped source, so varied per-field bytes exercise the slot framing and CRC16.
+    src = SENSOR_BIN.read_bytes()
+    db = EdbV3File(str(V3_SENSOR))
+    assert db.open(0) == OK
+    assert db.count(0) == 64
+    for i in range(64):
+        status, payload = db.read_rec(0, i + 1)
+        assert status == OK
+        assert payload == src[i * 22:(i + 1) * 22]
